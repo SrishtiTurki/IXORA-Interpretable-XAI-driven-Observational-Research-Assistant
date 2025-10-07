@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 """import os
 print("Google API Key:", os.getenv("GOOGLE_API_KEY"))
 
@@ -137,3 +138,8 @@ print(all_entities)
 
 
 
+=======
+from redis import Redis
+r = Redis(host='localhost', port=6379)
+print(r.ping())
+>>>>>>> 526eba8 (Initial commit on feature branch)
