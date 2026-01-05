@@ -19,3 +19,8 @@ rlhf_logs.jsonl
 
 # Env vars
 .env
+
+# Large LLM / GGUF models
+models/*.gguf
+models/**/*.gguf
+
