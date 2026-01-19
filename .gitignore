@@ -1,0 +1,26 @@
+# Virtual environments (custom names)
+zora/
+scispacy_env/
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Model / runtime caches
+cache/
+model_cache/
+Redis/
+
+# Logs
+*.log
+rlhf_logs.jsonl
+
+# Env vars
+.env
+
+# Large LLM / GGUF models
+models/*.gguf
+models/**/*.gguf
+
