@@ -24,11 +24,11 @@ BIOMISTRAL_CTX_LENGTH = 4096
 BIOMISTRAL_N_THREADS = int(os.getenv("BIOMISTRAL_N_THREADS", "4"))
 BIOMISTRAL_N_GPU_LAYERS = int(os.getenv("BIOMISTRAL_N_GPU_LAYERS", "0"))  # 0 = CPU only
 
+
 # ========== COMPUTER SCIENCE DOMAIN (NEW) ==========
-# CS Model GGUF Settings - Using Mistral-7B-Instruct or CodeLlama
-CSMODEL_GGUF_MODEL = os.getenv("CSMODEL_GGUF_MODEL", "TheBloke/Mistral-7B-Instruct-v0.2-GGUF")
-CSMODEL_GGUF_FILE = os.getenv("CSMODEL_GGUF_FILE", "mistral-7b-instruct-v0.2.Q5_K_M.gguf")
-# Alternative: "TheBloke/CodeLlama-7B-Instruct-GGUF" with "codellama-7b-instruct.Q5_K_M.gguf"
+# CS Model GGUF Settings - Using  CodeLlama
+CSMODEL_GGUF_MODEL = os.getenv("CSMODEL_GGUF_MODEL", "TheBloke/CodeLlama-7B-Instruct-GGUF")
+CSMODEL_GGUF_FILE = os.getenv("CSMODEL_GGUF_FILE", "codellama-7b-instruct.Q5_K_M.gguf")
 
 CSMODEL_MAX_TOKENS = int(os.getenv("CSMODEL_MAX_TOKENS", "80"))
 CSMODEL_TIMEOUT = float(os.getenv("CSMODEL_TIMEOUT", "60.0"))
