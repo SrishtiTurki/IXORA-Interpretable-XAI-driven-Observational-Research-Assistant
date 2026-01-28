@@ -1,4 +1,9 @@
-# core/main.py - COMPLETE UPDATED VERSION
+# core/main.py - OPTIMIZED VERSION (< 180s target)
+# Changes:
+# 1. Causal analysis REMOVED from main flow (button-only via /causal endpoint)
+# 2. Bayesian optimization moved to BACKGROUND (displays when ready)
+# 3. Tighter parameter extraction with timeout
+
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -15,15 +20,17 @@ from fastapi import HTTPException
 import hashlib
 import numpy as np
 from decimal import Decimal
+import time
+
 # modules
 from core.langgraph import run_multi_agent
-from core.analytics import run_causal_analysis,  run_shap_analysis
+from core.analytics import run_causal_analysis, run_shap_analysis
 from core.arxiv import retrieve_arxiv_evidence_async, _get_fallback_papers
 from core.utils import cache_set, cache_get
-from core.arxiv import retrieve_arxiv_evidence_async   
-# Add to main.py or create trainer_service.py
-import schedule
-import time
+from core.model_loader import get_model_status
+from core.utils import detect_intent, load_session_state, save_session_state
+from core.mistral import generate_with_mistral
+from core.analytics import run_bayesian_optimization  # For background task
 
 try:
     from core.rlhf.feedback_logger import log_feedback
@@ -31,19 +38,18 @@ except ImportError:
     try:
         from core.rlhf.feedback_logger import log_feedback_with_context as log_feedback
     except ImportError:
-        # Create a fallback function
         def log_feedback(session_id, preference, response_text="", query_hash="unknown"):
             import logging
             logging.getLogger("biomed").info(f"Feedback logged (fallback): {preference}")
             return True
 
-# Create directories if needed
+# Create directories
 os.makedirs("logs", exist_ok=True)
 os.makedirs("models", exist_ok=True)
 
 # Logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,  # Changed from DEBUG to INFO for speed
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(),
@@ -52,7 +58,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("biomed")
 
-app = FastAPI(title="IXORA - Multi-Agent Research Assistant")
+app = FastAPI(title="IXORA - Multi-Agent Research Assistant (Optimized)")
 
 # CORS
 app.add_middleware(
@@ -66,7 +72,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
     session_id: Optional[str] = None
-    domain: Optional[str] = "biomed"  # allow cs or biomed
+    domain: Optional[str] = "biomed"
 
 class FeedbackItem(BaseModel):
     session_id: str
@@ -76,10 +82,53 @@ class FeedbackItem(BaseModel):
 
 class CausalRequest(BaseModel):
     query: str
-    parameters: Optional[Dict[str, Any]] = None  # From extracted params
-    include_links: bool = True  # Flag for arXiv links
+    parameters: Optional[Dict[str, Any]] = None
+    include_links: bool = True
     domain: Optional[str] = "biomed"
+    session_id: Optional[str] = None  # NEW: to fetch from session if needed
 
+# ========== BACKGROUND TASK FOR BAYESIAN OPTIMIZATION ==========
+
+# In main.py - Keep using the existing run_bayesian_optimization
+
+async def run_optimization_background(session_id: str, parameters: Dict[str, Any], domain: str):
+    """
+    Background task that runs Bayesian optimization using EXISTING function.
+    """
+    logger.info(f"🔄 [BACKGROUND] Starting Bayesian optimization for session {session_id}")
+    start_time = time.time()
+    
+    try:
+        # Use the EXISTING function
+        opt_result = await run_bayesian_optimization(parameters, domain=domain)
+        
+        # Load and update session state
+        session_state = load_session_state(session_id) or {}
+        
+        session_state["bayesian_optimization"] = {
+            "status": "completed",
+            "result": opt_result,
+            "duration": time.time() - start_time,
+            "timestamp": datetime.now().isoformat(),
+            "parameters_analyzed": list(parameters.keys())
+        }
+        
+        save_session_state(session_id, session_state)
+        
+        logger.info(f"✅ [BACKGROUND] Optimization completed in {time.time() - start_time:.2f}s")
+        logger.info(f"   Result status: {opt_result.get('status', 'unknown')}")
+        
+    except Exception as e:
+        logger.error(f"❌ [BACKGROUND] Optimization failed: {e}")
+        
+        session_state = load_session_state(session_id) or {}
+        session_state["bayesian_optimization"] = {
+            "status": "failed",
+            "error": str(e)[:200],
+            "timestamp": datetime.now().isoformat()
+        }
+        save_session_state(session_id, session_state)
+    
 # ========== SESSION STATE MANAGEMENT ==========
 
 def save_session_state(session_id: str, state: dict):
@@ -91,35 +140,50 @@ def load_session_state(session_id: str) -> dict:
     """Load session state"""
     state = cache_get(f"session:{session_id}")
     if state:
-        logger.info(f"Loaded session state for {session_id}")
-    else:
-        logger.warning(f"No session state found for {session_id}")
+        logger.debug(f"Loaded session state for {session_id}")
     return state or {}
 
-# ========== MAIN CHAT ENDPOINT ==========
+# ========== MAIN CHAT ENDPOINT (OPTIMIZED) ==========
+
+# In main.py - Optimize the chat endpoint
 
 @app.post("/chat")
-async def chat(req: ChatRequest):
+async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
     session_id = req.session_id or str(uuid.uuid4())
     domain = (req.domain or "biomed").lower()
-    logger.info(f"🚀 Chat request: '{req.message[:100]}...' (session: {session_id})")
+    
+    # Start timing
+    start_time = time.time()
+    logger.info(f"🚀 [START] Chat request | Session: {session_id} | Domain: {domain}")
+    logger.info(f"📝 Query: {req.message[:100]}...")
 
-    # Load previous state safely
+    # Load/create session
     session_state = load_session_state(session_id) or {}
     history = session_state.get("history", [])
-
-    # Append new user message
     history.append({"role": "user", "content": req.message})
 
-    logger.info(f"Sending {len(history)} messages to multi-agent pipeline")
-
     try:
+        # Step 1: Quick intent detection (fast)
+        intent_start = time.time()
+        intent = await detect_intent(req.message, domain=domain)
+        intent_time = time.time() - intent_start
+        logger.info(f"🎯 Intent: {intent} ({intent_time:.2f}s)")
+
+        # Handle non-research queries quickly
+        if intent == "meta":
+            quick_response = "Hi! I'm IXORA, your research assistant. I specialize in biomedical and computational research questions. What experiment or analysis are you working on?"
+            return await _build_quick_response(session_id, session_state, history, quick_response, "meta")
         
-        # Start timing
-        import time
-        start_time = time.time()
+        if intent == "explanatory":
+            # Quick explanation
+            explain_prompt = f"Provide a clear, concise explanation of: {req.message}"
+            explanation, _ = await generate_with_mistral(explain_prompt, max_tokens=300, temperature=0.3)
+            return await _build_quick_response(session_id, session_state, history, explanation, "explanatory")
+
+        # Step 2: Run the main research pipeline
+        logger.info("🔬 Starting research pipeline...")
+        pipeline_start = time.time()
         
-        # Call with history
         result = await run_multi_agent(
             query=req.message,
             domain=domain,
@@ -127,451 +191,455 @@ async def chat(req: ChatRequest):
             history=history
         )
         
-        duration = time.time() - start_time
-        logger.info(f"✅ Multi-agent pipeline completed in {duration:.2f}s")
-        
-        # Get white box state
+        pipeline_time = time.time() - pipeline_start
+        logger.info(f"✅ Pipeline completed in {pipeline_time:.2f}s")
+
+        # Extract results
+        response_text = result.get("final_response", "Response generation failed.")
+        trace = result.get("trace", [])
+        confidence = result.get("confidence", 0.7)
         white_box = result.get("white_box_state", {})
+        raw_parameters = white_box.get("parameters", {})
         
-        # Extract validation scores from the validator agent
-        validation_scores = white_box.get("validation_scores", {})
-        confidence = validation_scores.get("overall_confidence", result.get("confidence", 0.7))
-        
-        # Extract parameters
-        parameters = white_box.get("parameters", {})
-        
-        # Extract trace
-        trace = white_box.get("trace", [])
-        
-        # Get final response
-        final_response = result.get("final_response", "No response generated")
-        
-        # Append assistant response
-        history.append({"role": "assistant", "content": final_response})
-        
-        # Calculate query hash for RLHF
-        query_hash = hashlib.sha256(req.message.encode()).hexdigest()[:16]
-        
-        # Save session state with enhanced metadata
-        session_state.update({
-            "history": history,
-            "query": req.message,
-            "domain": domain,
-            "parameters": parameters,
-            "validation_scores": validation_scores,
-            "trace": trace,
-            "last_response_metadata": {
-                "response": final_response,
-                "trace": trace,
-                "validation_scores": validation_scores,
-                "confidence": confidence,
-                "parameters": parameters,
-                "duration": duration,
-                "query_hash": query_hash
-            }
-        })
-        
-        save_session_state(session_id, session_state)
-        
-        # Format trace for frontend
-        formatted_trace = []
-        for step in trace:
-            if isinstance(step, dict):
-                step_name = step.get("step", "")
-                formatted_step = {
-                    "step": step_name,
-                    "timestamp": step.get("timestamp", datetime.now().isoformat()),
-                    "summary": _format_trace_summary(step),
-                    "details": step
+        # Clean and standardize parameters
+        parameters = {}
+        for param_name, param_value in raw_parameters.items():
+            if isinstance(param_value, dict):
+                # Already a dictionary, use as-is but ensure it has required fields
+                param_dict = {
+                    "value": param_value.get("value", param_value.get("Value", "")),
+                    "confidence": param_value.get("confidence", param_value.get("confidence_score", 0.8)),
+                    "unit": param_value.get("unit", param_value.get("units", "")),
+                    "raw_text": param_value.get("raw_text", param_value.get("original_text", str(param_value))),
+                    "method": param_value.get("method", param_value.get("extraction_method", "extracted")),
+                    "source": param_value.get("source", "pipeline")
                 }
+            else:
+                # Simple value (string, number, etc.) - convert to standard format
+                param_dict = {
+                    "value": param_value,
+                    "confidence": 0.8,
+                    "unit": "",
+                    "raw_text": str(param_value),
+                    "method": "auto_detected",
+                    "source": "pipeline"
+                }
+            
+            # Clean up the parameter name
+            clean_name = param_name.strip().replace(" ", "_").lower()
+            parameters[clean_name] = param_dict
+
+        # Step 3: Launch background optimization IF we have parameters
+        optimization_launched = False
+        if parameters:
+            # Check if we have optimizable parameters
+            has_optimizable_params = False
+            for param_name, param in parameters.items():
+                value = param.get("value", None)
                 
-                # Add specific metadata for certain steps
-                if step_name == "extractor":
-                    formatted_step["parameters_count"] = step.get("parameters_count", 0)
-                elif step_name == "analytics":
-                    formatted_step["explainability_method"] = step.get("explainability_method", "none")
-                elif step_name == "validator_comprehensive":
-                    formatted_step["confidence"] = step.get("confidence", 0.7)
-                    
-                formatted_trace.append(formatted_step)
-        
-        # Return with all data
-        return {
-            "response": final_response,
-            "trace": formatted_trace,
-            "validation_scores": validation_scores,
-            "confidence": confidence,
-            "session_id": session_id,
-            "metadata": {
-                "parameters_extracted": len(parameters),
-                "validation_performed": len(validation_scores) > 0,
-                "trace_steps": len(trace),
-                "total_duration": duration,
-                "query_hash": query_hash
-            },
-            "extracted_parameters": parameters  # Add for frontend display
-        }
-        
-    except Exception as e:
-        logger.exception(f"Chat endpoint failed: {e}")
-        
-        # Create fallback response with basic structure
-        if domain == "cs":
-            fallback_response = f"""<enthusiasm>Thanks for your CS research question!</enthusiasm>
-<clarify>What specific algorithmic approach or constraints should I consider?</clarify>
-<explanation>
-I encountered a technical issue while processing your query about "{req.message[:100]}". 
-
-For computer science research questions, consider:
-- Algorithmic complexity and scalability
-- Baselines and reproducibility (random seeds, versions)
-- Performance metrics (latency, throughput, accuracy)
-- Resource constraints (memory/compute)
-</explanation>
-<hypothesis>Computational parameters will significantly influence the observed performance metrics.</hypothesis>
-<followup>Could you rephrase your question or specify the algorithm/task details?</followup>"""
-        else:
-            fallback_response = f"""<enthusiasm>Thanks for your research question!</enthusiasm>
-<explanation>
-I encountered a technical issue while processing your query about "{req.message[:100]}". 
-
-For biomedical research questions like this, typical considerations include:
-- Experimental design with proper controls
-- Statistical analysis of results  
-- Parameter optimization
-- Biological relevance and reproducibility
-</explanation>
-<hypothesis>The key experimental parameters will significantly influence your research outcomes.</hypothesis>
-<followup>Could you rephrase your question or ask about specific experimental conditions?</followup>"""
-        
-        # Save error state
-        session_state.update({
-            "history": history + [{"role": "assistant", "content": fallback_response}],
-            "query": req.message,
-            "error": str(e)[:200]
-        })
-        save_session_state(session_id, session_state)
-        
-        return {
-            "response": fallback_response,
-            "error": str(e)[:200],
-            "trace": [{"step": "error", "error": str(e)[:100], "fallback_used": True}],
-            "validation_scores": {"overall_confidence": 0.3, "structural_completeness": 0.8},
-            "confidence": 0.3,
-            "session_id": session_id
-        }
-
-def _format_trace_summary(step: Dict) -> str:
-    """Create a one-line summary of a trace step"""
-    step_name = step.get("step", "")
-    
-    if step_name == "extractor":
-        count = step.get("parameters_count", 0)
-        return f"Extracted {count} parameters"
-    
-    elif step_name == "draft":
-        if step.get("biomistral_used"):
-            return "Generated draft with BioMistral"
-        if step.get("csmodel_used"):
-            return "Generated draft with CS model"
-        return "Generated response draft"
-    
-    elif step_name == "analytics":
-        method = step.get("explainability_method", "none")
-        return f"Ran analytics with {method}"
-    
-    elif step_name == "hypothesis":
-        return "Generated testable hypothesis"
-    
-    elif step_name == "synthesizer":
-        return "Synthesized final response"
-    
-    elif step_name == "validator_comprehensive":
-        confidence = step.get("confidence", 0.7)
-        return f"Validated response ({confidence:.1%} confidence)"
-    
-    elif step_name == "cosine_similarity":
-        return "Calculated semantic similarity"
-    
-    elif step_name == "advanced_metrics":
-        return "Calculated advanced validation metrics"
-    
-    else:
-        return f"Completed {step_name} step"
-    
-
-# ========== RLHF =================================
-
-async def train_if_enough_feedback():
-    """Check if we have enough feedback and train"""
-    import os
-    import json
-    
-    feedback_file = "logs/rlhf_feedback.jsonl"
-    if not os.path.exists(feedback_file):
-        return
-    
-    # Count feedback
-    with open(feedback_file, 'r') as f:
-        lines = f.readlines()
-    
-    if len(lines) >= 20:  # Train after 20 feedbacks
-        logger.info(f"🎯 Starting RLHF training with {len(lines)} feedbacks")
-        
-        # Run training
-        from core.rlhf.trainer import train_reward_model
-        success = await train_reward_model()
-        
-        if success:
-            logger.info("✅ RLHF training complete")
-            # Optional: Archive used feedback
-            archive_file = f"logs/rlhf_used_{int(time.time())}.jsonl"
-            os.rename(feedback_file, archive_file)
-
-@app.get("/rlhf/status")
-async def rlhf_status():
-    """Check RLHF training status"""
-    import os
-    import json
-    
-    feedback_file = "logs/rlhf_feedback.jsonl"
-    model_file = "models/reward_model.pth"
-    
-    feedback_count = 0
-    if os.path.exists(feedback_file):
-        with open(feedback_file, 'r') as f:
-            feedback_count = len(f.readlines())
-    
-    model_exists = os.path.exists(model_file)
-    
-    # Count preferences
-    preferences = {"good": 0, "bad": 0}
-    if os.path.exists(feedback_file):
-        with open(feedback_file, 'r') as f:
-            for line in f:
-                try:
-                    data = json.loads(line)
-                    pref = data.get("preference", 0)
-                    if pref == 1:
-                        preferences["good"] += 1
+                # Check if value is optimizable
+                if isinstance(value, (int, float)):
+                    has_optimizable_params = True
+                    logger.debug(f"Found numeric parameter for optimization: {param_name} = {value}")
+                    break
+                elif isinstance(value, list) and len(value) == 2:
+                    if all(isinstance(x, (int, float)) for x in value):
+                        has_optimizable_params = True
+                        logger.debug(f"Found range parameter for optimization: {param_name} = {value}")
+                        break
+                elif isinstance(value, str):
+                    # Try to convert string to number
+                    try:
+                        float_val = float(value)
+                        has_optimizable_params = True
+                        logger.debug(f"Found string-to-numeric parameter for optimization: {param_name} = {value}")
+                        break
+                    except (ValueError, TypeError):
+                        continue
+            
+            if has_optimizable_params:
+                logger.info("⚡ Launching background optimization")
+                # Ensure parameters are in the right format for optimization
+                opt_parameters = {}
+                for param_name, param in parameters.items():
+                    if isinstance(param, dict) and "value" in param:
+                        opt_parameters[param_name] = param["value"]
                     else:
-                        preferences["bad"] += 1
-                except:
-                    pass
+                        opt_parameters[param_name] = param
+                
+                background_tasks.add_task(
+                    run_optimization_background,
+                    session_id,
+                    opt_parameters,
+                    domain
+                )
+                optimization_launched = True
+            else:
+                logger.info("ℹ️ No optimizable parameters found")
+
+        # Step 4: Update session state
+        history.append({"role": "assistant", "content": response_text})
+        session_state.update({
+            "history": history[-20:],
+            "last_query": req.message,
+            "last_response": response_text,
+            "parameters": parameters,
+            "trace": trace,
+            "confidence": confidence,
+            "domain": domain,
+            "timestamp": datetime.now().isoformat(),
+            "intent": intent,
+            "optimization_launched": optimization_launched,
+            "pipeline_time": pipeline_time
+        })
+        
+        # Store analytics if available
+        if "analytics" in white_box:
+            session_state["analytics"] = white_box["analytics"]
+        
+        save_session_state(session_id, session_state)
+
+        # Step 5: Build final response
+        total_time = time.time() - start_time
+        
+        response = {
+            "response": response_text,
+            "session_id": session_id,
+            "confidence": round(confidence, 3),
+            "trace": trace[:10],  # Limit trace size
+            "parameters": parameters,  # Now properly formatted
+            "processing_time_seconds": round(total_time, 2),
+            "intent": intent,
+            "domain": domain,
+            "pipeline_stats": {
+                "pipeline_time": round(pipeline_time, 2),
+                "total_time": round(total_time, 2),
+                "optimization_launched": optimization_launched,
+                "parameters_extracted": len(parameters)
+            },
+            "analytics_available": "analytics" in white_box,
+            "optimization_note": "Running in background - check /optimization/{session_id}" if optimization_launched else "No optimization needed"
+        }
+
+        # Add analytics summary if available
+        if "analytics" in white_box:
+            analytics = white_box["analytics"]
+            response["analytics_summary"] = {
+                "method_used": analytics.get("explainability_method", "none"),
+                "has_explainability": bool(analytics.get("explainability")),
+                "has_causal": bool(analytics.get("causal")),
+                "parameter_count": len(parameters)
+            }
+
+        # Log completion
+        logger.info(f"✅ [COMPLETE] Total time: {total_time:.2f}s")
+        logger.info(f"   Parameters: {len(parameters)}")
+        logger.info(f"   Confidence: {confidence:.2f}")
+        logger.info(f"   Optimization launched: {optimization_launched}")
+        logger.info("=" * 60)
+
+        return response
+
+    except asyncio.TimeoutError:
+        logger.error(f"⏰ Request timed out for session {session_id}")
+        return await _handle_timeout(session_id, session_state, history, req.message)
+    
+    except Exception as e:
+        logger.exception(f"❌ Chat endpoint failed: {e}")
+        return await _handle_error(session_id, session_state, history, e)
+    
+
+async def _build_quick_response(session_id, session_state, history, response_text, intent):
+    """Build a quick response without full pipeline"""
+    history.append({"role": "assistant", "content": response_text})
+    session_state.update({
+        "history": history[-20:],
+        "intent": intent,
+        "timestamp": datetime.now().isoformat()
+    })
+    save_session_state(session_id, session_state)
     
     return {
-        "status": "active",
-        "feedback_collected": feedback_count,
-        "model_trained": model_exists,
-        "preferences": preferences,
-        "training_threshold": 20,
-        "ready_for_training": feedback_count >= 20,
-        "last_trained": _get_last_trained_time(),
-        "recommendations": [
-            "Collect at least 20 feedbacks before first training",
-            f"Current: {feedback_count}/20 feedbacks",
-            "Model will select better responses after training"
-        ]
+        "response": response_text,
+        "session_id": session_id,
+        "confidence": 0.9,
+        "trace": [{"step": "quick_response", "intent": intent}],
+        "parameters": {},
+        "processing_time_seconds": 0.5,
+        "intent": intent,
+        "quick_response": True
     }
 
-def _get_last_trained_time():
-    import os
-    import time
-    model_file = "models/reward_model.pth"
-    if os.path.exists(model_file):
-        mod_time = os.path.getmtime(model_file)
-        return time.ctime(mod_time)
-    return "Never"
+async def _handle_timeout(session_id, session_state, history, message):
+    """Handle timeout errors"""
+    error_msg = "⏰ The request timed out. Your query might be too complex or the server is busy. Please try a simpler query or try again later."
+    history.append({"role": "assistant", "content": error_msg})
+    session_state.update({
+        "history": history[-20:],
+        "error": "timeout",
+        "timestamp": datetime.now().isoformat()
+    })
+    save_session_state(session_id, session_state)
+    
+    return {
+        "response": error_msg,
+        "session_id": session_id,
+        "confidence": 0.3,
+        "trace": [{"step": "error", "error": "timeout"}],
+        "parameters": {},
+        "processing_time_seconds": 60.0,
+        "error": "timeout"
+    }
 
-# ========== ON-DEMAND: CAUSAL INFERENCE ==========
+async def _handle_error(session_id, session_state, history, error):
+    """Handle general errors"""
+    error_msg = f"❌ An error occurred: {str(error)[:100]}"
+    history.append({"role": "assistant", "content": error_msg})
+    session_state.update({
+        "history": history[-20:],
+        "error": str(error),
+        "timestamp": datetime.now().isoformat()
+    })
+    save_session_state(session_id, session_state)
+    
+    return {
+        "response": error_msg,
+        "session_id": session_id,
+        "confidence": 0.1,
+        "trace": [{"step": "error", "error": str(error)}],
+        "parameters": {},
+        "processing_time_seconds": 0.0,
+        "error": str(error)
+    }
+
+async def _build_quick_response(session_id, session_state, history, response_text, intent):
+    """Build quick response for non-research queries"""
+    history.append({"role": "assistant", "content": response_text})
+    session_state.update({
+        "history": history[-20:],
+        "last_response": response_text,
+        "timestamp": datetime.now().isoformat(),
+        "intent": intent
+    })
+    save_session_state(session_id, session_state)
+    
+    return {
+        "response": response_text,
+        "session_id": session_id,
+        "confidence": 0.9,
+        "trace": [{"step": "quick_response", "intent": intent}],
+        "parameters": {},
+        "processing_time_seconds": 0.5,
+        "intent": intent
+    }
+
+
+async def _handle_timeout(session_id, session_state, history, query):
+    """Handle timeout gracefully"""
+    fallback = f"I'm taking too long to analyze your query about '{query[:50]}...'. This might be a complex research question. Could you try rephrasing it or asking about a specific aspect?"
+    
+    history.append({"role": "assistant", "content": fallback})
+    session_state["history"] = history[-20:]
+    save_session_state(session_id, session_state)
+    
+    return {
+        "response": fallback,
+        "session_id": session_id,
+        "confidence": 0.3,
+        "trace": [{"step": "timeout", "error": "Request took too long"}],
+        "parameters": {},
+        "error": "Request timeout",
+        "suggestion": "Try a more specific question or fewer parameters"
+    }
+
+
+async def _handle_error(session_id, session_state, history, error):
+    """Handle error gracefully"""
+    fallback = "I encountered an issue processing your research question. Please try rephrasing or ask about a specific experimental parameter."
+    
+    history.append({"role": "assistant", "content": fallback})
+    session_state["history"] = history[-20:]
+    save_session_state(session_id, session_state)
+    
+    return {
+        "response": fallback,
+        "session_id": session_id,
+        "confidence": 0.1,
+        "trace": [{"step": "error", "error": str(error)[:100]}],
+        "parameters": {},
+        "error": "Processing error"
+    }
+
+# In main.py - Add comprehensive logging helper
+
+def log_pipeline_progress(step: str, duration: float, details: dict = None):
+    """Log pipeline progress with timing"""
+    logger.info(f"🔄 [{step.upper()}] Completed in {duration:.2f}s")
+    if details:
+        for key, value in details.items():
+            logger.info(f"   {key}: {value}")
+
+# Use it in the pipeline:
+# log_pipeline_progress("extraction", extract_time, {"params": len(parameters)})
+
+def _format_trace_summary(step: dict) -> str:
+    """Format trace step into human-readable summary"""
+    step_name = step.get("step", "unknown")
+    
+    if step_name == "extractor" or step_name == "parameter_extraction":
+        count = step.get("param_count", 0)
+        method = step.get("method", "unknown")
+        return f"Extracted {count} parameters using {method}"
+    
+    elif step_name == "draft":
+        length = step.get("draft_length", 0)
+        return f"Generated draft response ({length} chars)"
+    
+    elif step_name == "analytics":
+        methods = step.get("methods_used", [])
+        return f"Ran analytics: {', '.join(methods)}" if methods else "Analytics completed"
+    
+    elif step_name == "hypothesis":
+        return f"Formulated hypothesis: {step.get('hypothesis', '')[:100]}..."
+    
+    elif step_name == "synthesizer":
+        return "Synthesized final response with evidence"
+    
+    elif step_name == "validator" or step_name == "validator_comprehensive":
+        conf = step.get("confidence", 0)
+        return f"Validated response (confidence: {conf:.2f})"
+    
+    else:
+        return step.get("summary", f"Completed {step_name}")
+
+
+# ========== CAUSAL ANALYSIS ENDPOINT (BUTTON-TRIGGERED) ==========
 
 @app.post("/causal")
-async def run_causal(req: Dict[str, str]):
+async def causal_analysis_endpoint(req: CausalRequest):
     """
-    On-demand causal inference (triggered by frontend button)
+    On-demand causal analysis triggered by frontend button.
+    Can use parameters from session or from request.
     """
-    logger.info(f"📥 Received causal request: {req}")
-    
-    session_id = req.get("session_id")
-    domain = (req.get("domain") or "biomed").lower()
-    if not session_id:
-        logger.error("❌ No session_id in request")
-        return {
-            "error": "session_id required", 
-            "status": "failed"
-        }
-    
-    logger.info(f"🔬 Processing causal analysis for session: {session_id}")
+    logger.info(f"🔬 Causal analysis requested for: '{req.query[:100]}...'")
     
     try:
-        # Load session state
-        state = load_session_state(session_id)
-        if not state:
-            logger.warning(f"⚠️ No session state found for {session_id}")
-            return {
-                "causal": {
-                    "error": "Session expired. Please run a query first.",
-                    "suggestion": "Try asking a research question first"
-                },
-                "status": "failed"
-            }
+        # Get parameters (from request or session)
+        parameters = req.parameters
         
-        # Extract parameters from session state
-        parameters = state.get("parameters", {})
+        if not parameters and req.session_id:
+            # Try to load from session
+            session_state = load_session_state(req.session_id)
+            parameters = session_state.get("parameters", {})
         
-        # If no parameters in state, try to extract from query
         if not parameters:
-            last_query = state.get("query", "")
-            if last_query:
-                logger.info("📊 No cached parameters, extracting from query...")
-                try:
-                    from core.utils import extract_parameters
-                    parameters = await extract_parameters(last_query, domain)
-                    logger.info(f"✅ Extracted {len(parameters)} parameters")
-                except Exception as e:
-                    logger.error(f"Parameter extraction failed: {e}")
-        
-        if not parameters or len(parameters) < 2:
-            logger.warning(f"⚠️ Insufficient parameters: {len(parameters)}")
             return {
-                "causal": {
-                    "ate": 0.0,
-                    "error": "Insufficient parameters for causal analysis",
-                    "suggestion": "Try a query with multiple parameters like 'pH 5-7 and temperature 25-35°C'",
-                    "parameters_found": len(parameters)
-                },
-                "status": "partial"
+                "status": "error",
+                "error": "No parameters available for causal analysis. Please run a query first.",
+                "causal_results": {}
             }
         
-        logger.info(f"🧠 Running causal analysis with {len(parameters)} parameters")
+        # Run causal analysis with timeout
+        causal_result = await asyncio.wait_for(
+            run_causal_analysis(parameters, domain=req.domain),
+            timeout=30.0  # 30 second timeout
+        )
         
-        try:
-            from core.analytics import run_causal_analysis
-            
-            # Run with timeout
-            causal_result = await asyncio.wait_for(
-                run_causal_analysis(parameters, domain),
-                timeout=60.0
-            )
-            
-            logger.info(f"✅ Causal analysis complete: {causal_result.get('method', 'unknown')}")
-            
-            # CONVERT NUMPY TYPES BEFORE SAVING
-            causal_result_converted = causal_result
-            
-            # Save to session state
-            if "causal_results" not in state:
-                state["causal_results"] = []
-            state["causal_results"].append(causal_result_converted)
-            save_session_state(session_id, state)
-            
-            # Return with converted types
-            return {
-                "causal": causal_result_converted,
-                "status": "success",
-                "session_id": session_id,
-                "parameters_used": list(parameters.keys()),
-                "timestamp": datetime.now().isoformat()
-            }
-            
-        except asyncio.TimeoutError:
-            logger.error("⏰ Causal analysis timeout")
-            return {
-                "causal": {
-                    "error": "Causal analysis timeout (60s)",
-                    "suggestion": "Try with fewer parameters"
-                },
-                "status": "timeout"
-            }
-        except Exception as e:
-            logger.error(f"❌ Causal analysis error: {e}", exc_info=True)
-            return {
-                "causal": {
-                    "error": str(e)[:200],
-                    "suggestion": "Check parameter values and try again"
-                },
-                "status": "failed"
-            }
-            
-    except Exception as e:
-        logger.error(f"❌ Causal endpoint error: {e}", exc_info=True)
+        # Optionally fetch arXiv links if requested
+        arxiv_links = []
+        if req.include_links:
+            try:
+                arxiv_links = await asyncio.wait_for(
+                    retrieve_arxiv_evidence_async(req.query, max_papers=3),
+                    timeout=10.0
+                )
+            except (asyncio.TimeoutError, Exception) as e:
+                logger.warning(f"arXiv fetch failed: {e}")
+                arxiv_links = _get_fallback_papers(req.query)
+        
         return {
-            "causal": {
-                "error": "Server error processing request"
-            },
+            "status": "success",
+            "causal_results": causal_result,
+            "arxiv_links": arxiv_links,
+            "parameters_analyzed": list(parameters.keys()),
+            "domain": req.domain
+        }
+        
+    except asyncio.TimeoutError:
+        logger.error("Causal analysis timed out")
+        return {
+            "status": "timeout",
+            "error": "Causal analysis took too long (>30s). Please try with fewer parameters.",
+            "causal_results": {}
+        }
+    
+    except Exception as e:
+        logger.exception(f"Causal analysis failed: {e}")
+        return {
+            "status": "error",
+            "error": str(e)[:200],
+            "causal_results": {}
+        }
+
+
+# ========== OPTIMIZATION STATUS ENDPOINT ==========
+
+@app.get("/optimization/{session_id}")
+async def get_optimization_status(session_id: str):
+    """
+    Check if Bayesian optimization has completed for a session.
+    Frontend can poll this endpoint to show results when ready.
+    """
+    try:
+        session_state = load_session_state(session_id)
+        
+        if not session_state:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        opt_data = session_state.get("bayesian_optimization", {})
+        
+        if not opt_data:
+            return {
+                "status": "not_started",
+                "message": "No optimization has been requested for this session"
+            }
+        
+        return {
+            "status": opt_data.get("status", "unknown"),
+            "result": opt_data.get("result", {}),
+            "timestamp": opt_data.get("timestamp", ""),
+            "error": opt_data.get("error", None)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get optimization status: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve optimization status")
+
+
+# ========== ARXIV ENDPOINT ==========
+
+@app.post("/arxiv")
+async def arxiv_search(query: str):
+    """Search for relevant arXiv papers"""
+    if not query or len(query.strip()) < 3:
+        return {
+            "links": [],
+            "error": "Query too short",
             "status": "error"
         }
     
-@app.post("/causal_analysis")
-async def causal_analysis(req: CausalRequest, background_tasks: BackgroundTasks):
-    logger.info(f"🚀 Causal analysis request: {req.query[:100]}")
-    
     try:
-        domain = (req.domain or "biomed").lower()
-        # Run causal analysis (from analytics.py)
-        causal_result = await run_causal_analysis(req.query, req.parameters or {}, domain)
-        
-        # Optionally add arXiv links (evidence with causal "links")
-        evidence = []
-        if req.include_links:
-            evidence = await retrieve_arxiv_evidence_async(req.query + " causal effects", max_papers=2)
-        
-        return {
-            "causal_analysis": causal_result,
-            "evidence_links": evidence,  # ArXiv PDFs/links
-            "timestamp": datetime.now().isoformat(),
-            "confidence": causal_result.get("confidence", 0.7)
-        }
-    except Exception as e:
-        logger.error(f"Causal analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ========== ON-DEMAND: ARXIV PAPERS ==========
-@app.post("/arxiv")
-async def run_arxiv(req: Dict[str, str]):
-    """On-demand arXiv search with fallback"""
-    logger.info(f"📥 Received arXiv request: {req}")
-    
-    session_id = req.get("session_id")
-    if not session_id:
-        return {
-            "error": "session_id required", 
-            "status": "failed",
-            "links": []
-        }
-    
-    try:
-        state = load_session_state(session_id)
-        if not state:
-            return {
-                "links": [],
-                "error": "Session expired",
-                "status": "failed"
-            }
-        
-        query = state.get("query", "")
-        if not query:
-            # Get from history
-            history = state.get("history", [])
-            for msg in reversed(history):
-                if msg.get("role") == "user":
-                    query = msg.get("content", "")
-                    break
-        
-        if not query:
-            query = "yeast biomass growth pH temperature"
-        
-        logger.info(f"🔍 Searching arXiv for: {query[:100]}...")
-        
-        # Try real search first
+        # Try arXiv API with timeout
         try:
             papers = await asyncio.wait_for(
                 retrieve_arxiv_evidence_async(query, max_papers=5),
-                timeout=30
+                timeout=15.0
             )
             
             if papers:
-                logger.info(f"✅ Found {len(papers)} papers")
+                logger.info(f"📚 Found {len(papers)} arXiv papers")
                 return {
                     "links": papers,
                     "count": len(papers),
@@ -601,22 +669,35 @@ async def run_arxiv(req: Dict[str, str]):
             "error": "Server error",
             "status": "error"
         }
+
+
 # ========== HEALTH & DIAGNOSTICS ==========
 
 @app.get("/health")
 async def health():
-    """Health check"""
+    """Health check with optimization info"""
     return {
         "status": "healthy",
-        "service": "IXORA Multi-Agent System",
+        "service": "IXORA Research Assistant",
         "timestamp": datetime.now().isoformat(),
-        "version": "2.0",
-        "features": {
-            "chat": True,
-            "causal": True,
-            "arxiv": True,
-            "validation": True,
-            "trace": True
+        "optimizations": {
+            "parameter_extraction_timeout": "15s",
+            "analytics_timeout": "30s",
+            "pipeline_target": "< 90s",
+            "bayesian_optimization": "background_task",
+            "causal_analysis": "button_triggered",
+            "features": [
+                "Fast parameter extraction",
+                "Essential analytics only",
+                "Background optimization",
+                "On-demand causal analysis"
+            ]
+        },
+        "endpoints": {
+            "/chat": "Main research pipeline",
+            "/causal": "On-demand causal analysis",
+            "/optimization/{session_id}": "Check background optimization status",
+            "/arxiv": "Literature search"
         }
     }
 
@@ -679,17 +760,12 @@ async def get_trace(session_id: str):
     return {
         "session_id": session_id,
         "trace_count": len(trace),
-        "trace": trace[:20]  # Limit to first 20 entries
+        "trace": trace[:20]
     }
-
-
-# In main.py, add this endpoint:
 
 @app.get("/models/status")
 async def get_models_status():
     """Check which models are preloaded"""
-    from core.model_loader import get_model_status
-    
     status = get_model_status()
     
     # Check if BioMistral is actually loaded and responsive
@@ -712,34 +788,45 @@ async def get_models_status():
     }
 
 # ========== STARTUP ==========
-# In main.py, modify the startup function:
-# In main.py startup function
+
 @app.on_event("startup")
 async def startup():
     logger.info("="*80)
-    logger.info("🚀 IXORA - Starting with COMPLETE Model Pre-loading")
+    logger.info("🚀 IXORA - Starting up (OPTIMIZED VERSION)")
     logger.info("="*80)
     
+    import sys
+    is_dev = "--reload" in sys.argv or os.getenv("UVICORN_RELOAD", "false").lower() == "true"
+    
     try:
-        from core.model_loader import startup_models, get_model_status
+        from core.model_loader import startup_models, model_loader
         
-        # Start all models
-        success = await startup_models("biomed", warmup=True)
+        if is_dev:
+            logger.info("⚡ Dev mode: Fast startup + background model loading")
+            asyncio.create_task(
+                startup_models(domain="biomed", warmup=False)
+            )
+            logger.info("🔄 Heavy models loading in background...")
+            logger.info("✅ Server ready immediately — models will be ready in ~20-40s")
+        else:
+            logger.info("🛡️ Production mode: Full pre-loading")
+            await startup_models("biomed", warmup=True)
         
-        # Initialize reward model (create if doesn't exist)
+    except Exception as e:
+        logger.error(f"Startup error: {e}", exc_info=True)
+        
+        # Initialize reward model
         try:
             from core.rlhf.reward_model import get_reward_model
             reward_model = get_reward_model()
             if not reward_model._model_loaded:
-                logger.info("📝 Initializing new reward model (will train with feedback)")
-                # Save initial state so it exists
+                logger.info("📝 Initializing new reward model")
                 os.makedirs("models", exist_ok=True)
                 torch.save(reward_model.state_dict(), "models/reward_model.pth")
                 reward_model._model_loaded = True
         except Exception as e:
             logger.warning(f"Reward model init warning: {e}")
         
-        # Report status
         status = get_model_status()
         loaded = sum(1 for s in status.values() if s["loaded"])
         total = len(status)
@@ -757,4 +844,4 @@ async def startup():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="debug")
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")

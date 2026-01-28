@@ -44,9 +44,6 @@ MISTRAL_DEVICE = "cpu"
 
 # Mistral-Large Config (full, no quant)
 MISTRAL_MODEL_NAME = os.getenv("MISTRAL_MODEL_NAME", "mistralai/Mistral-Large-Instruct-2407")  
-MISTRAL_USE_API = os.getenv("MISTRAL_USE_API", "true").lower() == "true"
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
-MISTRAL_DEVICE = os.getenv("MISTRAL_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
 
 # ========== FEATURE FLAGS (SHARED) ==========
 ENABLE_SHAP = True
@@ -194,7 +191,7 @@ DOMAIN_PORTS = {
 }
 
 # ========== CS-SPECIFIC PARAMETER PATTERNS (NEW) ==========
-CS_PARAMETER_PATTERNS = {
+''' CS_PARAMETER_PATTERNS = {
     "time_complexity": [
         (r'O\(([^)]+)\)', 'complexity', 'big-O'),
         (r'time complexity[:\s]+O\(([^)]+)\)', 'complexity', 'big-O'),
@@ -225,10 +222,10 @@ CS_PARAMETER_PATTERNS = {
         (r'(\d+)\s*(iterations|epochs|steps)', 'iterations', None),
         (r'train for\s*(\d+)\s*(iterations|epochs)', 'iterations', None)
     ]
-}
+}'''
 
 # ========== DOMAIN-SPECIFIC ONTOLOGIES (NEW) ==========
-CS_ONTOLOGY = {
+''' CS_ONTOLOGY = {
     "time_complexity": {
         "description": "Algorithmic time complexity",
         "common_values": ["O(1)", "O(log n)", "O(n)", "O(n log n)", "O(n^2)", "O(2^n)"],
@@ -253,9 +250,9 @@ CS_ONTOLOGY = {
         "description": "Operations per second",
         "units": ["qps", "rps", "ops/sec"]
     }
-}
+} '''
 
-BIOMED_ONTOLOGY = {
+''' BIOMED_ONTOLOGY = {
     "ph": {
         "description": "Hydrogen ion concentration",
         "normal_range": [0, 14],
@@ -271,7 +268,7 @@ BIOMED_ONTOLOGY = {
         "units": ["mM", "µM", "nM", "M", "mg/mL", "g/L", "%"]
     }
 }
-
+'''
 # ========== HELPER FUNCTIONS ==========
 def get_domain_config(domain: str) -> Dict[str, Any]:
     """Get configuration for a specific domain"""
@@ -285,7 +282,7 @@ def get_domain_config(domain: str) -> Dict[str, Any]:
             "n_threads": BIOMISTRAL_N_THREADS,
             "n_gpu_layers": BIOMISTRAL_N_GPU_LAYERS,
             "system_prefix": BIOMED_SYSTEM_PREFIX,
-            "ontology": BIOMED_ONTOLOGY,
+            #"ontology": BIOMED_ONTOLOGY,
             "port": DOMAIN_PORTS["biomed"]
         }
     elif domain == "cs":
@@ -298,8 +295,8 @@ def get_domain_config(domain: str) -> Dict[str, Any]:
             "n_threads": CSMODEL_N_THREADS,
             "n_gpu_layers": CSMODEL_N_GPU_LAYERS,
             "system_prefix": CS_SYSTEM_PREFIX,
-            "ontology": CS_ONTOLOGY,
-            "parameter_patterns": CS_PARAMETER_PATTERNS,
+            #"ontology": CS_ONTOLOGY,
+            #"parameter_patterns": CS_PARAMETER_PATTERNS,
             "port": DOMAIN_PORTS["cs"]
         }
     else:

@@ -49,130 +49,98 @@ logger.info(f"NLTK ready: {_nltk_ready}")
 # ========== INTENT DETECTION WITH NLTK ==========
 
 async def detect_intent(query: str, domain: str = "biomed") -> str:
-    """Enhanced intent detection using NLTK POS tagging"""
+    """
+    Modern intent detection with three clear paths:
+    - meta           → obvious chit-chat, greetings, meta questions
+    - research_full  → optimization, parameters, effects, experiments, comparisons
+    - explanatory    → definitions, explanations, background, "what is", "how does it work"
+    """
+    if not query:
+        return "meta"
+
     query_lower = query.lower().strip()
-    
-    # Always try NLTK first if available
+
+    # ──────────────────────────────────────────────
+    # 1. Very clear meta / chit-chat (small group)
+    # ──────────────────────────────────────────────
+    meta_keywords = [
+        "hi", "hello", "hey", "good morning", "good afternoon", "good evening",
+        "how are you", "how r u", "who are you", "what are you", "what can you do",
+        "thanks", "thank you", "thx", "ty", "ok", "okay", "alright", "got it",
+        "bye", "goodbye", "see you", "tell me a joke", "joke", "funny story",
+        "what time is it", "weather", "date today"
+    ]
+
+    if len(query.split()) < 8 and any(kw in query_lower for kw in meta_keywords):
+        return "meta"
+
+    # ──────────────────────────────────────────────
+    # 2. Strong signals → full research / optimization / experimental pipeline
+    # ──────────────────────────────────────────────
+    strong_research_markers = [
+        "effect of", "impact of", "influence of", "optimize", "maximi", "minimi",
+        "best", "optimal", "better", "improve", "increase", "decrease",
+        "investigat", "study", "experiment", "trial", "compare", "versus", "vs",
+        "relationship", "correlation", "caus", "significant", "p-value", "anova",
+        "parameter", "condition", "factor", "variable", "batch size", "learning rate",
+        "lr", "epochs", "dropout", "optimizer", "adam", "sgd", "accuracy", "loss",
+        "ph", "temperature", "concentration", "rpm", "incubat", "agitat", "dose",
+        "dosage", "enzyme activity", "growth rate", "yield", "biomass", "fermentation"
+    ]
+
+    if any(marker in query_lower for marker in strong_research_markers):
+        return "research_full"
+
+    # Number + scientific unit → almost always full research
+    number_pattern = r'\d+\.?\d*'
+    unit_pattern = r'(ph|°?c|°?f|m[m]?|µ|g|mg|g|l|ml|rpm|hr|min|sec|day|h|k|µg|µM|mM|nM|xg|%)'
+    if re.search(number_pattern, query_lower) and re.search(unit_pattern, query_lower):
+        return "research_full"
+
+    # Imperative + analysis/optimization verbs (using NLTK if available)
     if _nltk_ready:
         try:
-            from nltk.tokenize import word_tokenize, sent_tokenize
+            from nltk.tokenize import word_tokenize
             from nltk import pos_tag
-            
-            # Tokenize and POS tag
-            sentences = sent_tokenize(query)
-            all_tokens = []
-            all_tags = []
-            
-            for sentence in sentences:
-                tokens = word_tokenize(sentence)
-                tagged = pos_tag(tokens)
-                all_tokens.extend(tokens)
-                all_tags.extend([tag for _, tag in tagged])
-            
-            # Analyze POS patterns
-            pos_string = ' '.join(all_tags[:15])  # Look at first 15 tags
-            
-            # Rule 1: Questions (starts with WH-word or contains ?)
-            if query.strip().endswith('?') or any(word in query_lower.split()[0] for word in ['what', 'how', 'why', 'when', 'where', 'which', 'who']):
-                # Check if it's a research question
-                research_indicators = ['study', 'experiment', 'research', 'effect', 'impact', 'correlation']
-                if any(indicator in query_lower for indicator in research_indicators):
-                    return "research"
-                return "conversational"
-            
-            # Rule 2: Contains imperative verbs (commands)
-            if 'VB' in pos_string:  # Base form verb
-                analyze_verbs = ['analyze', 'calculate', 'compute', 'optimize', 'compare', 'evaluate']
-                research_verbs = ['study', 'investigate', 'examine', 'explore', 'determine']
-                
-                tokens_lower = [t.lower() for t in all_tokens]
-                if any(verb in tokens_lower for verb in analyze_verbs):
-                    return "analyze"
-                if any(verb in tokens_lower for verb in research_verbs):
-                    return "research"
-            
-            # Rule 3: Contains numbers and units (parameter analysis)
-            number_pattern = r'\d+\.?\d*'
-            unit_pattern = r'(ph|°?c|m[m]?|µg|mg|g|l|ml|rpm|hr|min|sec|day)'
-            
-            if re.search(number_pattern, query_lower) and re.search(unit_pattern, query_lower):
-                return "analyze"
-            
-            # Rule 4: Contains scientific methodology terms
-            methodology_terms = ['method', 'protocol', 'procedure', 'design', 'setup', 'trial', 'replicate']
-            if any(term in query_lower for term in methodology_terms):
-                return "research"
-            
-            # Rule 5: Short queries (< 5 words) are conversational
-            if len(all_tokens) < 5:
-                return "conversational"
-                
-        except Exception as e:
-            logger.warning(f"NLTK intent detection failed, using fallback: {e}")
-    
-    # FALLBACK: Keyword-based detection (domain aware)
-    # Check for conversation keywords
-    conversational_keywords = [
-        "hello", "hi", "hey", "how are you", "thank you", "thanks",
-        "what is", "what are", "tell me about", "explain", "define",
-        "who is", "who are", "can you", "could you", "would you",
-        "please", "help me", "i need", "i want", "i'm looking for",
-        "good morning", "good afternoon", "good evening"
+
+            tokens = word_tokenize(query_lower)
+            tagged = pos_tag(tokens)
+            pos_string = ' '.join(tag for _, tag in tagged[:12])
+
+            analyze_verbs = ['analyze', 'calculate', 'compute', 'optimize', 'compare', 'evaluate', 'predict']
+            if 'VB' in pos_string and any(v in tokens for v in analyze_verbs):
+                return "research_full"
+        except:
+            pass
+
+    # ──────────────────────────────────────────────
+    # 3. Questions that look explanatory / conceptual → lightweight path
+    # ──────────────────────────────────────────────
+    explanatory_starters = [
+        "what is", "what are", "what does", "explain", "define", "describe",
+        "how does", "how do", "how can", "how to", "tell me about", "what happens if",
+        "difference between", "why is", "why does", "can you explain"
     ]
-    
-    if any(keyword in query_lower for keyword in conversational_keywords):
-        return "conversational"
-    
-    # Check for RESEARCH intent
-    research_keywords = [
-        "study", "studies", "experiment", "experiments", "research",
-        "investigate", "investigation", "paper", "publication", "journal",
-        "method", "methodology", "protocol", "procedure", "trial",
-        "clinical trial", "randomized", "cohort", "case study", "literature",
-        "hypothesis", "objective", "aim", "goal", "purpose"
-    ]
-    
-    if any(keyword in query_lower for keyword in research_keywords):
-        return "research"
-    
-    # CS-specific research/analysis terms
-    cs_terms = [
-        "algorithm", "time complexity", "space complexity", "big o", "runtime",
-        "throughput", "latency", "gpu", "cpu", "memory", "batch size", "learning rate",
-        "optimizer", "dataset", "model", "architecture", "ablation", "baseline", "benchmark"
-    ]
-    if domain == "cs":
-        if any(term in query_lower for term in cs_terms):
-            return "research"
-    
-    # Check for ANALYZE intent
-    analyze_keywords = [
-        "analyze", "analysis", "statistical", "statistics", "correlation",
-        "regression", "anova", "t-test", "p-value", "significant", "significance",
-        "optimize", "optimization", "maximize", "minimize", "improve", "enhance",
-        "compare", "comparison", "contrast", "versus", "vs", "difference",
-        "effect of", "impact of", "influence of", "relationship between",
-        "predict", "forecast", "estimate", "calculate", "compute",
-        "parameter", "variable", "factor", "condition"
-    ]
-    
-    if any(keyword in query_lower for keyword in analyze_keywords):
-        return "analyze"
-    
-    # Default based on domain
+
+    if any(query_lower.startswith(s) for s in explanatory_starters) or "?" in query:
+        return "explanatory"
+
+    # ──────────────────────────────────────────────
+    # 4. Domain-specific hints
+    # ──────────────────────────────────────────────
     if domain == "biomed":
-        # Biomedical queries often imply research
-        biomedical_terms = ["ph", "temperature", "enzyme", "protein", "cell", "growth", 
-                           "biomass", "yeast", "bacteria", "culture", "incubation",
-                           "dose", "concentration", "treatment", "therapy", "drug"]
-        
-        if any(term in query_lower for term in biomedical_terms):
-            return "research"
+        biomed_terms = ["enzyme", "protein", "cell", "growth", "culture", "biomass", "yeast", "bacteria"]
+        if any(t in query_lower for t in biomed_terms):
+            return "explanatory"  # most biomed background questions stay light unless strong optimization signal
     elif domain == "cs":
-        if any(term in query_lower for term in cs_terms):
-            return "analyze"
-    
-    return "conversational"
+        cs_terms = ["algorithm", "complexity", "big o", "runtime", "throughput", "latency"]
+        if any(t in query_lower for t in cs_terms):
+            return "explanatory"
+
+    # ──────────────────────────────────────────────
+    # 5. Default → explanatory (fail open to lighter path)
+    # ──────────────────────────────────────────────
+    return "explanatory"
 
 # ========== NLTK-BASED PARAMETER EXTRACTION ==========
 
@@ -677,3 +645,20 @@ def format_parameters_for_display(parameters: Dict[str, Any]) -> str:
         lines.append(f"- {key}: {value_str} {unit} ({method}, confidence: {confidence:.0%})")
     
     return "\n".join(lines)
+
+# core/utils.py 
+
+def load_session_state(session_id: str) -> dict:
+    """Load session state from cache"""
+    state = cache_get(f"session:{session_id}")
+    if state:
+        logger.info(f"Loaded session state for {session_id}")
+    else:
+        logger.debug(f"No session state found for {session_id}")
+    return state or {}
+
+
+def save_session_state(session_id: str, state: dict):
+    """Save complete state for on-demand feature access"""
+    cache_set(f"session:{session_id}", state)
+    logger.info(f"Saved session state for {session_id}")

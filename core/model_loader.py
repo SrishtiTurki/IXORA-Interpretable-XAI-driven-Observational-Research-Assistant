@@ -12,7 +12,8 @@ from typing import Dict, Any, Optional, List, Union
 import hashlib
 import numpy as np
 from sentence_transformers import util
-
+import torch
+from sentence_transformers import util
 logger = logging.getLogger("core.model_loader")
 
 # ==================== CONFIGURATION ====================
@@ -516,7 +517,7 @@ class UnifiedModelLoader:
         try:
             from sentence_transformers import SentenceTransformer
             
-            # Use a small, fast model
+            # Use all-MiniLM-L6-v2 model
             model = SentenceTransformer('all-MiniLM-L6-v2')
             
             # Warm up with a small batch
@@ -741,8 +742,7 @@ class UnifiedModelLoader:
                     embeddings = model.encode(["warmup text", "test query"])
                     
                     # Test similarity
-                    import torch
-                    from sentence_transformers import util
+                    
                     emb1 = torch.tensor(embeddings[0]).unsqueeze(0)
                     emb2 = torch.tensor(embeddings[1]).unsqueeze(0)
                     similarity = util.cos_sim(emb1, emb2)

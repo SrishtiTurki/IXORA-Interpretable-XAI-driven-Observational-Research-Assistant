@@ -41,7 +41,7 @@ async def load_mistral() -> Any:
         logger.error(f"Mistral load failed: {e}", exc_info=True)
         return "fallback"
 
-async def call_mistral_api(prompt: str, max_tokens: int = 1000, temperature: float = 0.7) -> str:
+async def call_mistral_api(prompt: str, max_tokens: int = 600, temperature: float = 0.5) -> str:
     """Direct API call with error handling"""
     from core.config import MISTRAL_API_KEY
     
@@ -74,7 +74,7 @@ async def call_mistral_api(prompt: str, max_tokens: int = 1000, temperature: flo
         logger.info(f"Sending request to Mistral API for {len(prompt)} chars...")
         
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, headers=headers, json=data, timeout=120) as response:
+            async with session.post(url, headers=headers, json=data, timeout=190) as response:
                 logger.info(f"Response status: {response.status}")
                 
                 if response.status != 200:

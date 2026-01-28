@@ -1,0 +1,22 @@
+fastapi
+uvicorn[standard]
+streamlit
+langchain
+langchain-community
+langchain-core
+langgraph
+mistralai
+transformers
+torch  # Needed for transformers (CPU version is fine)
+redis
+python-dotenv
+requests
+pymupdf  # Critical fix for arXiv retrieval (ArxivLoader needs this to parse PDFs)
+arxiv  # Lightweight arXiv client (recommended alternative, no PDF parsing needed)
+shap
+lime
+scikit-learn
+numpy
+scipy
+pandas
+celery  # If you're using the Celery analytics tasks

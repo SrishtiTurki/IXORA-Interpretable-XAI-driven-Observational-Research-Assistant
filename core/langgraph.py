@@ -9,9 +9,12 @@ from datetime import datetime
 import asyncio
 import re
 import json
+# Convert to tensors for similarity computation
+import torch
+from sentence_transformers import util
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage
-from core.analytics import run_bayesian_optimization, run_comprehensive_analytics_parallel
+from core.analytics import run_bayesian_optimization, run_comprehensive_analytics_parallel, run_causal_analysis
 from core.mistral import generate_with_mistral
 from core.config import BIOMISTRAL_TIMEOUT
 from scipy.stats import entropy
@@ -52,181 +55,345 @@ class AgentState(TypedDict):
 
 # ==================== AGENTS ====================
 
+from core.parameter_extractor import extract_parameters
+
+# In langgraph.py - Optimize the workflow
+
 async def extractor_agent(state: AgentState) -> AgentState:
+    """
+    Optimized extractor - uses existing function with timeout.
+    """
+    logger.info("🔍 [EXTRACTOR] Starting parameter extraction...")
+    extract_start = time.time()
+    
     query = state["query"]
-    parameters = {}
-
-    # Extract pH range
-    ph_match = re.search(r'pH\s*([\d\.]+)\s*[–\-]\s*([\d\.]+)', query)
-    if ph_match:
-        ph_low, ph_high = float(ph_match.group(1)), float(ph_match.group(2))
-        parameters["ph_range"] = {
-            "value": [ph_low, ph_high],
-            "unit": "pH",
-            "description": f"pH range from {ph_low} to {ph_high}",
-            "method": "regex"
-        }
-        parameters["ph_center"] = {
-            "value": (ph_low + ph_high) / 2,
-            "unit": "pH",
-            "description": "Midpoint of pH range",
-            "method": "calculated"
-        }
-
-    # Extract temperature range
-    temp_match = re.search(r'(\d+\.?\d*)\s*[–\-]\s*(\d+\.?\d*)\s*°?C', query)
-    if temp_match:
-        temp_low, temp_high = float(temp_match.group(1)), float(temp_match.group(2))
-        parameters["temperature_range"] = {
-            "value": [temp_low, temp_high],
-            "unit": "°C",
-            "description": f"Temperature range from {temp_low} to {temp_high}",
-            "method": "regex"
-        }
-        parameters["temp_center"] = {
-            "value": (temp_low + temp_high) / 2,
-            "unit": "°C",
-            "description": "Midpoint of temperature range",
-            "method": "calculated"
-        }
-
-    state["parameters"] = parameters
-    state["trace"].append({"step": "extractor", "parameters_count": len(parameters)})
-    logger.info(f"Extractor found {len(parameters)} parameters")
+    domain = state["domain"]
+    
+    try:
+        # Use existing extract_parameters with timeout
+        from core.parameter_extractor import extract_parameters
+        
+        extraction_result = await asyncio.wait_for(
+            extract_parameters(query, domain=domain),
+            timeout=15.0  # 15 second timeout
+        )
+        
+        parameters = extraction_result.get("parameters", {})
+        metadata = extraction_result.get("_metadata", {})
+        
+        state["parameters"] = parameters
+        
+        # Log extraction
+        extract_time = time.time() - extract_start
+        logger.info(f"✅ [EXTRACTOR] Found {len(parameters)} parameters in {extract_time:.2f}s")
+        
+        state["trace"].append({
+            "step": "parameter_extraction",
+            "method": metadata.get("method", "unknown"),
+            "param_count": len(parameters),
+            "time_seconds": round(extract_time, 2),
+            "success": True
+        })
+        
+    except asyncio.TimeoutError:
+        logger.warning("⏰ [EXTRACTOR] Timed out after 15s")
+        state["parameters"] = {}
+        state["trace"].append({
+            "step": "parameter_extraction",
+            "error": "timeout",
+            "time_seconds": 15.0,
+            "success": False
+        })
+    except Exception as e:
+        logger.error(f"❌ [EXTRACTOR] Failed: {e}")
+        state["parameters"] = {}
+        state["trace"].append({
+            "step": "parameter_extraction",
+            "error": str(e)[:100],
+            "success": False
+        })
+    
     return state
 
 async def draft_agent(state: AgentState) -> AgentState:
     query = state["query"]
     domain = state["domain"]
+    parameters = state.get("parameters", {})
     draft = ""
-    trace_entry = {"step": "draft"}
+    trace_entry = {
+        "step": "draft",
+        "query_preview": query[:100] + "..." if len(query) > 100 else query,
+        "domain": domain,
+        "timestamp": datetime.now().isoformat()
+    }
+
+    # Helper to safely call BioMistral with fallback
+    async def safe_biomistral_generate(prompt: str, max_tokens: int = 300) -> str:
+        try:
+            from core.model_loader import model_loader
+            output = await model_loader.generate_with_biomistral(prompt, max_tokens=max_tokens)
+            trace_entry["biomistral_success"] = True
+            trace_entry["biomistral_tokens"] = len(output.split())
+            logger.info("BioMistral generated draft successfully")
+            return output
+        except Exception as e:
+            logger.warning(f"BioMistral failed: {e} — falling back to Mistral API")
+            trace_entry["biomistral_success"] = False
+            trace_entry["biomistral_error"] = str(e)[:100]
+            # Fallback to Mistral for core reasoning
+            fallback_output = await generate_with_mistral(prompt, max_tokens=max_tokens*2, temperature=0.5)
+            return fallback_output
 
     if domain == "biomed":
-        try:
-            # Use model_loader for BioMistral generation
-            from core.model_loader import model_loader
-            
-            biomed_draft = await model_loader.generate_with_biomistral(
-                f"Summarize biomedical context for: {query}",
-                max_tokens=80
-            )
-            
-            trace_entry["biomistral_used"] = True
-            trace_entry["biomistral_draft_length"] = len(biomed_draft)
-        except Exception as e:
-            logger.warning(f"BioMistral generation failed: {e} - using fallback")
-            biomed_draft = ""
-            trace_entry["biomistral_used"] = False
-            trace_entry["fallback_reason"] = str(e)[:100]
+        # === STEP 1: BioMistral does the deep biomedical reasoning ===
+        biomed_prompt = f"""
+You are BioMistral, a biomedical reasoning model specialized in scientific literature understanding, clinical reasoning support, and hypothesis generation. Your role is not to provide medical diagnoses or treatment recommendations, but to act as a research and clinical-assistant model that formulates clear, structured, and scientifically plausible hypotheses based on a user’s query.
 
-        refine_prompt = f"""
-You are a biomedical research assistant. Take this concise biomedical draft and expand it into a detailed, engaging, colleague-level response.
-Include scientific accuracy, experimental design considerations, a clear testable hypothesis, and 1-2 thoughtful follow-up questions.
+When a user provides a question, observation, symptom description, dataset insight, or research curiosity, your task is to carefully interpret the intent and context of the query, identify the key biological, clinical, or molecular variables involved, and generate one or more well-defined hypotheses that could reasonably explain the observation or guide further investigation.
 
-Biomedical draft:
-{biomed_draft if biomed_draft else "Fallback: Standard biomedical factors for query."}
+User Query: "{query}"
 
-Original query:
-{query}
+Extracted Parameters (if any): {json.dumps(parameters, indent=2) if parameters else "None detected."}
 
-Respond in XML structure: <enthusiasm>...</enthusiasm> <explanation>...</explanation> <hypothesis>...</hypothesis> <followup>...</followup>
+Instructions:
+- Think deeply about biological mechanisms, pathways, and experimental variables.
+- Prioritize scientific plausibility and mechanistic insight.
+- Formulate 1–2 strong, testable hypotheses.
+- Suggest key experimental variables to control or measure.
+- Keep response concise but insightful (200–400 words).
+- Do not use XML tags — just write naturally.
 """
 
-        draft, _ = await generate_with_mistral(
-            refine_prompt,
-            max_tokens=400,
-            temperature=0.7
+        biomed_core = await safe_biomistral_generate(biomed_prompt, max_tokens=400)
+        trace_entry["biomistral_core_length"] = len(biomed_core)
+
+        # === STEP 2: Mistral-Large expands and structures it beautifully ===
+        expansion_prompt = f"""
+You are IXORA, an advanced multi-agent biomedical research assistant.
+
+You have received deep biomedical reasoning from BioMistral (your domain expert):
+
+{biomed_core}
+
+Now, expand this into a full, engaging, colleague-level response with the following structure:
+
+<enthusiasm>Express genuine excitement about the research question</enthusiasm>
+
+<explanation>
+Provide a detailed, accurate scientific explanation.
+Include background, key mechanisms, experimental considerations, and potential pitfalls.
+Reference standard practices and biological principles.
+</explanation>
+
+<hypothesis>
+State 1–2 clear, testable hypotheses derived from BioMistral's insight.
+Make them specific, measurable, and mechanistically grounded.
+</hypothesis>
+
+<followup>
+Ask 2–3 thoughtful follow-up questions to guide next steps.
+Focus on experimental design, controls, measurements, or strain/media choices.
+</followup>
+
+Original user query: "{query}"
+
+Ensure the response is warm, precise, and inspiring for a researcher.
+Use clear formatting and scientific tone.
+"""
+
+        content, cot_steps = await generate_with_mistral(
+        expansion_prompt, max_tokens=1500, temperature=0.4
         )
+        draft = content  # ← Only take the actual text string!
+
         trace_entry["mistral_expansion"] = True
+        trace_entry["final_draft_length"] = len(draft)
+        trace_entry["cot_steps_count"] = len(cot_steps)  # Optional: for debugging
+
+        state["draft"] = draft  
 
     elif domain == "cs":
         try:
-            # Use CS model loader for CS draft generation
             from core.computerscience.loaders import generate_cs_draft
             
-            cs_draft = await generate_cs_draft(
-                query,
-                max_tokens=80
+            # === STEP 1: CodeLlama does deep but CONCISE CS reasoning ===
+            cs_core_prompt = f"""
+    You are CodeLlama-Instruct, a precise computer science reasoning model specialized in algorithms, complexity analysis, data structures, and experimental design.
+
+    Your task: Analyze the user's computational/research question below and provide a concise (150–250 words max), high-insight summary covering:
+    - Key algorithmic or computational challenge
+    - Relevant time/space complexity considerations
+    - Important parameters or hyperparameters implied
+    - Standard approaches or baselines
+    - Potential trade-offs
+
+    Keep it dense, technical, and focused — no greetings, no XML tags, no fluff.
+
+    User Query: "{query}"
+
+    Extracted Parameters (if any): {json.dumps(parameters, indent=2) if parameters else "None detected."}
+
+    Output only the concise analysis:
+    """
+
+            # Generate short core draft with lower max_tokens
+            cs_core = await generate_cs_draft(cs_core_prompt, max_tokens=300)  # Tight limit!
+            # Fallback trim if model ignores limit
+            if len(cs_core) > 1000:
+                cs_core = cs_core[:1000] + "\n[...truncated for brevity]"
+
+            trace_entry["cs_core_success"] = True
+            trace_entry["cs_core_length"] = len(cs_core)
+
+            # === STEP 2: Mistral-Large expands into full structured response ===
+            expansion_prompt = f"""
+    You are IXORA, an advanced multi-agent computer science research assistant.
+
+    You have received concise, high-quality algorithmic reasoning from CodeLlama:
+
+    {cs_core}
+
+    Now expand this into a full, engaging, structured response using exactly this format:
+
+    <enthusiasm>Show genuine excitement about this excellent CS research question!</enthusiasm>
+
+    <clarify>Ask 1–2 thoughtful questions to clarify key constraints (e.g., input size, memory limits, target runtime, hardware, dataset characteristics).</clarify>
+
+    <explanation>
+    Provide clear, detailed explanation including:
+    • Core algorithmic ideas and alternatives
+    • Time and space complexity analysis
+    • Relevant data structures
+    • Common baselines and when to use them
+    • Reproducibility and implementation tips
+    </explanation>
+
+    <hypothesis>
+    State 1–2 specific, testable hypotheses about performance, scalability, or optimal parameter choices.
+    </hypothesis>
+
+    <followup>
+    Ask 2–3 sharp follow-up questions to help refine the approach (e.g., target metrics, real-world constraints, preferred libraries).
+    </followup>
+
+    Keep total response under 1800 words. Be precise, warm, and insightful.
+    """
+
+            result = await generate_with_mistral(
+                expansion_prompt,
+                max_tokens=1800,   # Strict cap on final output
+                temperature=0.4
             )
-            
-            trace_entry["csmodel_used"] = True
-            trace_entry["csmodel_draft_length"] = len(cs_draft)
+
+            # Safely extract only the content string
+            draft = result[0].strip() if isinstance(result, tuple) else str(result).strip()
+
+            trace_entry["cs_expansion_success"] = True
+            trace_entry["final_draft_length"] = len(draft)
+
         except Exception as e:
-            logger.warning(f"CS Model generation failed: {e} - using fallback")
-            cs_draft = ""
-            trace_entry["csmodel_used"] = False
-            trace_entry["fallback_reason"] = str(e)[:100]
+            logger.warning(f"CS draft pipeline failed: {e} — using safe fallback")
+            fallback = await generate_with_mistral(
+                f"Provide a clear, structured computer science analysis for: {query}",
+                max_tokens=1200,
+                temperature=0.5
+            )
+            draft = (fallback[0].strip() if isinstance(fallback, tuple) else str(fallback))
 
-        refine_prompt = f"""
-You are a computer science research assistant. Take this concise CS draft and expand it into a detailed, engaging, colleague-level response.
-Include algorithmic reasoning, computational complexity considerations, a clear testable hypothesis, and 1-2 thoughtful follow-up questions.
+        # Final safety trim (never let it go wild)
+        # After getting draft_content or final_content
+        if len(draft_content) > 6200:
+            logger.warning(f"Draft too long ({len(draft_content)} chars) — truncating & summarizing")
+            truncate_prompt = f"""
+            The following text is too long. Summarize it concisely while preserving structure, 
+            key scientific points, hypothesis, and follow-up questions.
+            Keep under 5800 characters total.
+            
+            Original text:
+            {draft_content[:10000]}  # safety slice
+            
+            Summarized version:
+            """
+            summary, _ = await generate_with_mistral(truncate_prompt, max_tokens=1600, temperature=0.5)
+            draft_content = summary
 
-CS draft:
-{cs_draft if cs_draft else "Fallback: Standard computational factors for query."}
-
-Original query:
-{query}
-
-Respond in XML structure: <enthusiasm>...</enthusiasm> <clarify>...</clarify> <explanation>...</explanation> <hypothesis>...</hypothesis> <followup>...</followup>
-"""
-
-        draft, _ = await generate_with_mistral(
-            refine_prompt,
-            max_tokens=400,
-            temperature=0.7
-        )
-        trace_entry["mistral_expansion"] = True
-
+        trace_entry["final_draft_length"] = len(draft)
     else:
-        # For other domains
-        mistral_prompt = f"Generate a detailed analysis for: {query}"
-        draft, _ = await generate_with_mistral(mistral_prompt, max_tokens=300)
-        trace_entry["mistral_only"] = True
+        draft = await generate_with_mistral(f"Analyze: {query}", max_tokens=1000)
+        trace_entry["general_mistral"] = True
+    # Ultimate defense — ensure draft is always a string
+    if isinstance(draft, tuple):
+        draft = draft[0] if draft else ""
+    draft = str(draft).strip()
 
     state["draft"] = draft
     state["trace"].append(trace_entry)
-    logger.info(f"Draft generated ({len(draft)} chars)")
+    logger.info(f"Draft agent completed — final draft: {len(draft)} chars")
     return state
 
 async def analytics_agent(state: AgentState) -> AgentState:
-    logger.info("Running analytics agent...")
+    """
+    Optimized analytics - only run essential analytics.
+    """
+    logger.info("📊 [ANALYTICS] Starting analysis...")
+    analytics_start = time.time()
     
     parameters = state.get("parameters", {})
     domain = state.get("domain", "biomed")
     
-    # Run the real analytics (this is where LIME/SHAP selection happens)
-    analytics_result = await run_comprehensive_analytics_parallel(
-        user_input=state["query"],
-        parameters=parameters,
-        domain=domain
-    )
+    if not parameters or len(parameters) < 2:
+        logger.info("⏭️ [ANALYTICS] Skipping - insufficient parameters")
+        state["analytics"] = {
+            "skipped": True,
+            "reason": "insufficient_parameters",
+            "parameter_count": len(parameters)
+        }
+        return state
     
-    # Store the real result
-    state["analytics"] = analytics_result
+    try:
+        # Run analytics with timeout
+        from core.analytics import run_comprehensive_analytics_parallel
+        
+        analytics_result = await asyncio.wait_for(
+            run_comprehensive_analytics_parallel(
+                user_input=state["query"],
+                parameters=parameters,
+                domain=domain
+            ),
+            timeout=30.0  # 30 second timeout for analytics
+        )
+        
+        state["analytics"] = analytics_result
+        
+        analytics_time = time.time() - analytics_start
+        logger.info(f"✅ [ANALYTICS] Completed in {analytics_time:.2f}s")
+        
+        state["trace"].append({
+            "step": "analytics",
+            "time_seconds": round(analytics_time, 2),
+            "explainability_method": analytics_result.get("explainability_method", "none"),
+            "parameters_analyzed": len(parameters),
+            "optimization_note": "will_run_in_background"
+        })
+        
+    except asyncio.TimeoutError:
+        logger.warning("⏰ [ANALYTICS] Timed out after 30s")
+        state["analytics"] = {
+            "timeout": True,
+            "partial_results": True
+        }
+        state["trace"].append({
+            "step": "analytics",
+            "error": "timeout",
+            "time_seconds": 30.0
+        })
+    except Exception as e:
+        logger.error(f"❌ [ANALYTICS] Failed: {e}")
+        state["analytics"] = {
+            "error": str(e)[:100],
+            "failed": True
+        }
     
-    # Now we can safely access the dynamic fields
-    state["trace"].append({
-        "step": "analytics",
-        "explainability_method": analytics_result.get("explainability_method", "none"),
-        "parameters_count": len(parameters),
-        "selection_reason": "embedding similarity",
-        "lime_used": "lime" in analytics_result.get("explainability", {}),
-        "shap_used": "shap" in analytics_result.get("explainability", {}),
-        "execution_time_ms": analytics_result.get("execution_time", 0) * 1000  # optional, if added
-    })
-    
-    logger.info(f"Analytics completed. Method: {analytics_result.get('explainability_method', 'none')}")
-
-    # Optional: conditional Bayesian optimization
-    if "optimize" in state.get("intent", "").lower() or len(parameters) >= 3:
-        try:
-            optimization_result = await run_bayesian_optimization(parameters, domain)
-            # Merge or update optimization
-            state["analytics"]["optimization"] = optimization_result
-        except Exception as e:
-            logger.error(f"Bayesian optimization failed: {e}")
-            state["analytics"]["optimization"] = {"error": str(e)}
-
     return state
 
 async def hypothesis_agent(state: AgentState) -> AgentState:
@@ -262,6 +429,21 @@ Generate a hypothesis about how the parameters affect the outcome. Be specific a
         "generation_method": "mistral_with_fallback"
     })
     logger.info("Hypothesis generated")
+    return state
+
+async def memory_summarizer(state: AgentState) -> AgentState:
+    if len(state["messages"]) <= 3:
+        state["conversation_summary"] = ""
+        return state
+    
+    summary_prompt = (
+        "Summarize the previous conversation concisely, "
+        "focusing on the main research question and any parameters discussed:\n\n"
+        + "\n".join([f"{m.role}: {m.content[:200]}" for m in state["messages"][:-1]])
+    )
+    
+    summary = await generate_with_mistral(summary_prompt, max_tokens=180, temperature=0.4)
+    state["conversation_summary"] = summary
     return state
 
 async def synthesizer_agent(state: AgentState) -> AgentState:
@@ -427,7 +609,7 @@ IMPORTANT: If this is NOT a scientific/research question, politely decline and e
 """
 
     # Generate with Mistral
-    response, _ = await generate_with_mistral(prompt, max_tokens=1800, temperature=0.7)
+    response, _ = await generate_with_mistral(prompt, max_tokens=1200, temperature=0.5)
     
     # Strict validation of format
     if not response:
@@ -554,7 +736,7 @@ def enforce_xml_structure(content: str, user_query: str, domain: str = "biomed")
                     hypothesis_text = "Hypothesis based on analysis."
                 content = content.replace("</explanation>", f"</explanation>\n\n{tag}{hypothesis_text}{tag.replace('<', '</')}")
             elif tag == "<followup>":
-                if domain == "cs":
+                if domain == "cs": 
                     content = f"{content}\n\n{tag}\n1. What specific implementation approach are you considering?\n2. How would this scale to larger datasets?\n</followup>"
                 else:
                     content = f"{content}\n\n{tag}\n1. What specific aspect would you like to explore further?\n2. Do you have any preliminary data?\n</followup>"
@@ -632,9 +814,6 @@ async def validator_agent(state: AgentState) -> AgentState:
         # Extract embeddings
         response_emb, draft_emb, query_emb = embeddings
         
-        # Convert to tensors for similarity computation
-        import torch
-        from sentence_transformers import util
         
         response_tensor = torch.tensor(response_emb).unsqueeze(0)
         draft_tensor = torch.tensor(draft_emb).unsqueeze(0)
@@ -726,7 +905,7 @@ async def validator_agent(state: AgentState) -> AgentState:
         if reward_model:
             # Generate alternative response
             alt_prompt = f"Generate an alternative detailed research response to: {query}"
-            alt_response, _ = await generate_with_mistral(alt_prompt, max_tokens=800, temperature=0.8)
+            alt_response, _ = await generate_with_mistral(alt_prompt, max_tokens=800, temperature=0.6)
             
             candidates = [response, alt_response]
             
@@ -869,6 +1048,7 @@ async def run_multi_agent(
     history: List[Dict[str, str]] = None
 ) -> dict:
     history = history or []
+
     
     initial_state = AgentState(
         messages=[HumanMessage(content=msg["content"]) for msg in history] + [HumanMessage(content=query)],
@@ -886,6 +1066,10 @@ async def run_multi_agent(
         embedding_scores={}
     )
     logger.info(f"Starting multi-agent pipeline for query: {query[:100]}...")
+    logger.info(f"Starting with history length: {len(initial_state['messages'])}")
+    if len(initial_state['messages']) > 1:
+        logger.info("Previous message: " + initial_state['messages'][-2].content[:80])
+    
 
     try:
         result = await multi_agent_graph.ainvoke(
