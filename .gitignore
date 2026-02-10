@@ -1,0 +1,55 @@
+# =========================
+# Virtual Environments
+# =========================
+zora/
+scispacy_env/
+venv/
+.venv/
+
+# =========================
+# Python Cache
+# =========================
+__pycache__/
+*.pyc
+
+# =========================
+# Environment Variables
+# =========================
+.env
+
+# =========================
+# Models & Large ML Files
+# =========================
+models/
+model_cache/
+
+*.gguf
+*.pth
+*.bin
+*.safetensors
+
+# =========================
+# Runtime Cache / Data
+# =========================
+cache/
+Redis/
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+backend_debug.log
+rlhf_logs.jsonl
+
+# =========================
+# OS Files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# IDE
+# =========================
+.vscode/
+.idea/
