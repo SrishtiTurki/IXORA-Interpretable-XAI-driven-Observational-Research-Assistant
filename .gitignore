@@ -16,3 +16,8 @@ model_cache/
 # Python junk
 __pycache__/
 .env
+
+
+# Cache + logs
+cache/
+logs/
