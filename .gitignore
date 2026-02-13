@@ -1,55 +1,18 @@
-# =========================
-# Virtual Environments
-# =========================
+# Virtual env
 zora/
-scispacy_env/
 venv/
-.venv/
 
-# =========================
-# Python Cache
-# =========================
-__pycache__/
-*.pyc
-
-# =========================
-# Environment Variables
-# =========================
-.env
-
-# =========================
-# Models & Large ML Files
-# =========================
+# Models
 models/
 model_cache/
 
+# ML weights
 *.gguf
 *.pth
+*.pt
 *.bin
-*.safetensors
+*.onnx
 
-# =========================
-# Runtime Cache / Data
-# =========================
-cache/
-Redis/
-
-# =========================
-# Logs
-# =========================
-logs/
-*.log
-backend_debug.log
-rlhf_logs.jsonl
-
-# =========================
-# OS Files
-# =========================
-.DS_Store
-Thumbs.db
-
-# =========================
-# IDE
-# =========================
-.vscode/
-.idea/
+# Python junk
+__pycache__/
+.env
