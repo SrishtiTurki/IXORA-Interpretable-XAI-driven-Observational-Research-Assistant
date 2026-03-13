@@ -4,11 +4,19 @@
 # 2. Bayesian optimization moved to BACKGROUND (displays when ready)
 # 3. Tighter parameter extraction with timeout
 
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from core.intent_router import classify_conversation_intent, is_out_of_domain, get_out_of_domain_message
 from pydantic import BaseModel, Field
 import asyncio
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, OAuth2PasswordRequestForm
+from pydantic import BaseModel, EmailStr
+from pymongo import MongoClient
+from passlib.context import CryptContext
+from datetime import datetime, timedelta
+import jwt
+import os
+import httpx
 from typing import Optional, Dict, List, Any
 import json
 from datetime import datetime
@@ -24,6 +32,9 @@ from decimal import Decimal
 import time
 from dotenv import load_dotenv
 load_dotenv()
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
+from pathlib import Path
 # modules
 from core.langgraph import run_multi_agent
 from core.analytics import run_causal_analysis, run_shap_analysis
@@ -34,10 +45,12 @@ from core.utils import load_session_state, save_session_state
 from core.mistral import generate_with_mistral
 from core.intent_router import classify_conversation_intent
 import os
+from core.routers import public, dashboard
+from core.routers.dashboard import router as dashboard_router
+from core.routers.public import router as public_router
 print(f"CSMODEL_ENABLED: {os.getenv('CSMODEL_ENABLED')}")
 print(f"CSMODEL_USE_FROM_PRETRAINED: {os.getenv('CSMODEL_USE_FROM_PRETRAINED')}")
 from core.analytics import run_bayesian_optimization  # For background task
-
 try:
     from core.rlhf.feedback_logger import log_feedback
 except ImportError:
@@ -66,14 +79,102 @@ logger = logging.getLogger("biomed")
 
 app = FastAPI(title="IXORA - Multi-Agent Research Assistant (Optimized)")
 
+# Mount frontend static files
+app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
+
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # tighten in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount frontend static files
+app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_home():
+    path = Path("auth/index.html")
+    if not path.is_file():
+        return "<h1>Error: auth/index.html not found</h1>"
+    return path.read_text(encoding="utf-8")
+
+@app.get("/login", response_class=HTMLResponse)
+async def serve_login():
+    path = Path("auth/login.html")
+    if not path.is_file():
+        return "<h1>Error: auth/login.html not found</h1>"
+    return path.read_text(encoding="utf-8")
+
+# Add your /dashboard route directly here too (temporary)
+@app.get("/dashboard", response_class=HTMLResponse)
+async def serve_dashboard():
+    path = Path("frontend/dashboard.html")   # adjust path if needed
+    if not path.is_file():
+        return "<h1>Error: dashboard.html not found</h1>"
+    return path.read_text(encoding="utf-8")
+
+app.include_router(public_router)     
+app.include_router(dashboard_router)
+
+# Config (add to your existing .env variables if missing)
+MONGODB_URI      = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
+MONGODB_DB_NAME  = os.getenv("MONGODB_DB_NAME", "ixora")
+JWT_SECRET       = os.getenv("JWT_SECRET")  # must be set in .env!
+GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_REDIRECT_URI  = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:8000/auth/google/callback")
+
+client = MongoClient(MONGODB_URI)
+db = client[MONGODB_DB_NAME]
+users = db["users"]
+users.create_index("email", unique=True)
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+security = HTTPBearer()
+
+@app.get("/api/health")
+def health():
+    try:
+        # Try a real command
+        db.command("ping")
+        # Optional: check if users collection exists
+        collections = db.list_collection_names()
+        users_exists = "users" in collections
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "collections": collections,
+            "users_collection_exists": users_exists
+        }
+    except Exception as e:
+        return {"status": "degraded", "error": str(e), "uri_used": MONGODB_URI}
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+def create_token(user_id: str, email: str) -> str:
+    payload = {
+        "sub": user_id,
+        "email": email,
+        "exp": datetime.utcnow() + timedelta(hours=24*7)
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        user = users.find_one({"_id": payload["sub"]})
+        if not user:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return user
+    except:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)

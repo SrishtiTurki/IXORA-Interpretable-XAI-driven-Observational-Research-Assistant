@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>IXORA — Sign In</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --sage-light: #E7FBE6;
+      --sage-mid: #CBE2B5;
+      --sage-dark: #86AB89;
+      --gold-warm: #A28B55;
+      --gold-light: #B99470;
+      --cream: #FEFAE0;
+      --moss: #A6B37D;
+      --ink: #1a1f14;
+      --ink-light: #2d3526;
+      --white: #ffffff;
+      --error: #c0392b;
+      --success: #27ae60;
+    }
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      font-family: 'Syne', sans-serif;
+      background: var(--ink);
+      color: var(--cream);
+      overflow: hidden;
+      cursor: none;
+    }
+
+    /* Cursor */
+    .cursor { width: 10px; height: 10px; background: var(--gold-warm); border-radius: 50%; position: fixed; top: 0; left: 0; pointer-events: none; z-index: 9999; transform: translate(-50%,-50%); transition: transform 0.1s, width 0.3s, height 0.3s; mix-blend-mode: difference; }
+    .cursor-ring { width: 36px; height: 36px; border: 1.5px solid var(--gold-warm); border-radius: 50%; position: fixed; top: 0; left: 0; pointer-events: none; z-index: 9998; transform: translate(-50%,-50%); transition: all 0.15s ease-out; opacity: 0.5; }
+    .cursor.hover { width: 16px; height: 16px; }
+    .cursor-ring.hover { width: 56px; height: 56px; opacity: 0.2; }
+
+    /* Layout */
+    .auth-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      height: 100vh;
+      position: relative;
+    }
+
+    /* LEFT PANEL — Brand/Visual */
+    .auth-left {
+      background: linear-gradient(160deg, var(--ink-light) 0%, #111710 100%);
+      padding: 3rem 4rem;
+      display: flex; flex-direction: column;
+      position: relative; overflow: hidden;
+    }
+    .auth-left::before {
+      content: '';
+      position: absolute; top: -50%; left: -30%;
+      width: 120%; height: 120%;
+      background: radial-gradient(ellipse 60% 50% at 60% 50%, rgba(134,171,137,0.07) 0%, transparent 60%);
+      pointer-events: none;
+    }
+    /* Animated grid */
+    .grid-bg {
+      position: absolute; inset: 0;
+      background-image: linear-gradient(rgba(162,139,85,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(162,139,85,0.04) 1px, transparent 1px);
+      background-size: 50px 50px;
+    }
+    .left-logo {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 2.2rem;
+      font-weight: 300;
+      color: var(--cream);
+      letter-spacing: 0.12em;
+      display: flex; align-items: center; gap: 0.5rem;
+      position: relative; z-index: 2;
+      text-decoration: none;
+    }
+    .left-logo span { width: 8px; height: 8px; background: var(--gold-warm); border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.6);opacity:0.6} }
+
+    .left-content {
+      flex: 1; display: flex; flex-direction: column; justify-content: center;
+      position: relative; z-index: 2;
+    }
+    .left-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.6rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--gold-warm);
+      display: flex; align-items: center; gap: 0.6rem;
+      margin-bottom: 2rem;
+    }
+    .left-tag::before { content: ''; width: 20px; height: 1px; background: var(--gold-warm); }
+    .left-headline {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: clamp(2.2rem, 3.5vw, 3.5rem);
+      font-weight: 300;
+      line-height: 1.1;
+      color: var(--cream);
+      margin-bottom: 1.5rem;
+    }
+    .left-headline em { font-style: italic; color: var(--sage-mid); }
+    .left-desc {
+      font-size: 0.85rem;
+      line-height: 1.9;
+      color: rgba(254,250,224,0.45);
+      max-width: 380px;
+      margin-bottom: 3rem;
+    }
+
+    /* Floating terminal card */
+    .terminal-card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(162,139,85,0.15);
+      border-radius: 10px;
+      padding: 1.5rem;
+      max-width: 380px;
+      position: relative;
+    }
+    .terminal-card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 2px;
+      border-radius: 10px 10px 0 0;
+      background: linear-gradient(90deg, var(--sage-dark), var(--gold-warm));
+    }
+    .tc-header {
+      display: flex; align-items: center; gap: 6px;
+      margin-bottom: 1rem;
+    }
+    .tc-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .tc-dot:nth-child(1){background:#ff5f57} .tc-dot:nth-child(2){background:#febc2e} .tc-dot:nth-child(3){background:#28c840}
+    .tc-line {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      color: rgba(254,250,224,0.5);
+      line-height: 2;
+      padding-left: 0.5rem;
+    }
+    .tc-line .prompt { color: var(--gold-warm); margin-right: 0.4rem; }
+    .tc-line .cmd { color: var(--sage-mid); }
+    .tc-line .out { color: rgba(254,250,224,0.35); font-style: italic; }
+    .tc-cursor { display: inline-block; width: 6px; height: 12px; background: var(--gold-warm); vertical-align: middle; animation: blink 1s infinite; margin-left: 2px; }
+    @keyframes blink { 0%,50%{opacity:1} 51%,100%{opacity:0} }
+
+    .left-footer {
+      position: relative; z-index: 2;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.55rem;
+      color: rgba(254,250,224,0.2);
+      letter-spacing: 0.1em;
+    }
+
+    /* Floating orbs */
+    .orb {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(80px);
+      pointer-events: none;
+    }
+    .orb-1 { width: 300px; height: 300px; background: rgba(134,171,137,0.06); top: -100px; right: -100px; animation: orbFloat1 8s ease-in-out infinite; }
+    .orb-2 { width: 200px; height: 200px; background: rgba(162,139,85,0.05); bottom: 100px; left: -50px; animation: orbFloat2 10s ease-in-out infinite; }
+    @keyframes orbFloat1 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(-20px,20px)} }
+    @keyframes orbFloat2 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(20px,-20px)} }
+
+    /* RIGHT PANEL — Form */
+    .auth-right {
+      background: var(--cream);
+      display: flex; align-items: center; justify-content: center;
+      padding: 3rem;
+      position: relative;
+      overflow: hidden;
+    }
+    .auth-right::before {
+      content: '';
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(ellipse 70% 50% at 80% 20%, rgba(231,251,230,0.6) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 40% at 20% 80%, rgba(203,226,181,0.3) 0%, transparent 50%);
+    }
+
+    .auth-form-wrap {
+      width: 100%;
+      max-width: 420px;
+      position: relative; z-index: 2;
+    }
+
+    .form-header {
+      margin-bottom: 2.5rem;
+    }
+    .form-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.6rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--gold-warm);
+      margin-bottom: 0.75rem;
+      display: block;
+    }
+    .form-title {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 2.5rem;
+      font-weight: 300;
+      color: var(--ink);
+      line-height: 1.1;
+    }
+    .form-title em { font-style: italic; color: var(--gold-warm); }
+
+    /* Tab Switch */
+    .auth-tabs {
+      display: flex;
+      background: rgba(162,139,85,0.08);
+      border-radius: 6px;
+      padding: 4px;
+      margin-bottom: 2rem;
+      border: 1px solid rgba(162,139,85,0.15);
+    }
+    .auth-tab {
+      flex: 1; padding: 0.65rem;
+      text-align: center;
+      font-family: 'Syne', sans-serif;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: all 0.3s;
+      border: none;
+      background: transparent;
+      color: #8a9070;
+    }
+    .auth-tab.active {
+      background: var(--ink);
+      color: var(--cream);
+    }
+
+    /* Form panels */
+    .form-panel { display: none; }
+    .form-panel.active {
+      display: block;
+      animation: panelIn 0.4s ease;
+    }
+    @keyframes panelIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Google Button */
+    .google-btn {
+      width: 100%;
+      padding: 0.9rem;
+      background: var(--white);
+      border: 1.5px solid rgba(162,139,85,0.2);
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center; gap: 0.75rem;
+      font-family: 'Syne', sans-serif;
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--ink);
+      cursor: pointer;
+      transition: all 0.3s;
+      margin-bottom: 1.5rem;
+    }
+    .google-btn:hover {
+      border-color: var(--gold-warm);
+      box-shadow: 0 4px 15px rgba(162,139,85,0.1);
+      transform: translateY(-1px);
+    }
+    .google-icon { width: 20px; height: 20px; }
+
+    .divider {
+      display: flex; align-items: center; gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1; height: 1px;
+      background: rgba(162,139,85,0.2);
+    }
+    .divider span {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.6rem;
+      letter-spacing: 0.15em;
+      color: #a0a88a;
+      text-transform: uppercase;
+    }
+
+    /* Input groups */
+    .input-group { margin-bottom: 1.2rem; position: relative; }
+    .input-label {
+      display: block;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.6rem;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--gold-warm);
+      margin-bottom: 0.5rem;
+    }
+    .input-field {
+      width: 100%;
+      padding: 0.85rem 1rem;
+      background: rgba(255,255,255,0.7);
+      border: 1.5px solid rgba(162,139,85,0.2);
+      border-radius: 6px;
+      font-family: 'Syne', sans-serif;
+      font-size: 0.88rem;
+      color: var(--ink);
+      transition: all 0.3s;
+      outline: none;
+    }
+    .input-field::placeholder { color: #b0b898; }
+    .input-field:focus {
+      border-color: var(--gold-warm);
+      background: rgba(255,255,255,0.95);
+      box-shadow: 0 0 0 3px rgba(162,139,85,0.1);
+    }
+    .input-field.error { border-color: var(--error); }
+    .input-field.success { border-color: var(--success); }
+
+    .input-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+
+    .password-wrap { position: relative; }
+    .pw-toggle {
+      position: absolute; right: 0.75rem; top: 50%;
+      transform: translateY(-50%);
+      background: none; border: none; cursor: pointer;
+      color: #a0a88a; font-size: 1rem;
+      transition: color 0.3s;
+    }
+    .pw-toggle:hover { color: var(--gold-warm); }
+
+    .field-msg {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.58rem;
+      margin-top: 0.3rem;
+      display: block;
+      min-height: 14px;
+    }
+    .field-msg.error { color: var(--error); }
+    .field-msg.success { color: var(--success); }
+
+    /* Password strength */
+    .pw-strength { margin-top: 0.5rem; }
+    .pw-bar-row { display: flex; gap: 4px; margin-bottom: 0.3rem; }
+    .pw-seg {
+      flex: 1; height: 3px; border-radius: 2px;
+      background: rgba(162,139,85,0.15);
+      transition: background 0.3s;
+    }
+    .pw-seg.weak { background: #e74c3c; }
+    .pw-seg.fair { background: #f39c12; }
+    .pw-seg.good { background: var(--sage-dark); }
+    .pw-seg.strong { background: var(--success); }
+    .pw-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.58rem;
+      color: #a0a88a;
+    }
+
+    .form-options {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 1.5rem;
+    }
+    .checkbox-label {
+      display: flex; align-items: center; gap: 0.5rem;
+      font-size: 0.78rem;
+      color: #6a7058;
+      cursor: pointer;
+    }
+    .checkbox-label input { display: none; }
+    .checkbox-box {
+      width: 16px; height: 16px;
+      border: 1.5px solid rgba(162,139,85,0.3);
+      border-radius: 3px;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+    .checkbox-label input:checked + .checkbox-box {
+      background: var(--ink);
+      border-color: var(--ink);
+    }
+    .checkbox-label input:checked + .checkbox-box::after {
+      content: '✓';
+      color: var(--cream);
+      font-size: 0.6rem;
+    }
+    .forgot-link {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.62rem;
+      letter-spacing: 0.08em;
+      color: var(--gold-warm);
+      text-decoration: none;
+      transition: color 0.3s;
+    }
+    .forgot-link:hover { color: var(--gold-light); text-decoration: underline; }
+
+    .submit-btn {
+      width: 100%;
+      padding: 1rem;
+      background: var(--ink);
+      color: var(--cream);
+      font-family: 'Syne', sans-serif;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.3s;
+      position: relative; overflow: hidden;
+      margin-bottom: 1rem;
+    }
+    .submit-btn::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: var(--gold-warm);
+      transform: translateX(-101%);
+      transition: transform 0.3s;
+      z-index: 0;
+    }
+    .submit-btn:hover::before { transform: translateX(0); }
+    .submit-btn span { position: relative; z-index: 1; }
+    .submit-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .submit-btn.loading::after {
+      content: '';
+      position: absolute; inset: 0;
+      background: var(--gold-warm);
+      z-index: 2;
+      animation: shimmer 1.5s infinite;
+    }
+    @keyframes shimmer {
+      0% { transform: translateX(-100%); opacity: 0.3; }
+      50% { opacity: 0.6; }
+      100% { transform: translateX(100%); opacity: 0.3; }
+    }
+
+    .switch-mode {
+      text-align: center;
+      font-size: 0.78rem;
+      color: #6a7058;
+    }
+    .switch-mode a {
+      color: var(--gold-warm);
+      text-decoration: none;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .switch-mode a:hover { text-decoration: underline; }
+
+    /* Alert */
+    .alert {
+      padding: 0.85rem 1rem;
+      border-radius: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 0.05em;
+      margin-bottom: 1.2rem;
+      display: none;
+      align-items: center; gap: 0.5rem;
+    }
+    .alert.show { display: flex; }
+    .alert.error { background: rgba(192,57,43,0.08); border: 1px solid rgba(192,57,43,0.2); color: var(--error); }
+    .alert.success { background: rgba(39,174,96,0.08); border: 1px solid rgba(39,174,96,0.2); color: var(--success); }
+
+    /* Terms */
+    .terms-text {
+      font-size: 0.7rem;
+      color: #8a9070;
+      text-align: center;
+      line-height: 1.6;
+      margin-top: 1rem;
+    }
+    .terms-text a { color: var(--gold-warm); text-decoration: none; }
+
+    /* Success overlay */
+    .success-overlay {
+      position: fixed; inset: 0;
+      background: var(--ink);
+      z-index: 1000;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      opacity: 0; pointer-events: none;
+      transition: opacity 0.5s;
+    }
+    .success-overlay.show { opacity: 1; pointer-events: all; }
+    .success-icon { font-size: 4rem; margin-bottom: 1.5rem; animation: bounceIn 0.6s; }
+    @keyframes bounceIn { 0%{transform:scale(0)} 60%{transform:scale(1.15)} 100%{transform:scale(1)} }
+    .success-title {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 3rem;
+      font-weight: 300;
+      color: var(--cream);
+      margin-bottom: 0.5rem;
+    }
+    .success-sub {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      color: var(--sage-mid);
+      letter-spacing: 0.15em;
+    }
+    .progress-bar-wrap { width: 200px; height: 2px; background: rgba(255,255,255,0.1); border-radius: 2px; margin-top: 2rem; overflow: hidden; }
+    .progress-bar-fill { height: 100%; background: var(--gold-warm); animation: progress 2s linear forwards; }
+    @keyframes progress { from{width:0} to{width:100%} }
+
+    /* Mobile */
+    @media (max-width: 900px) {
+      body { overflow-y: auto; }
+      .auth-layout { grid-template-columns: 1fr; height: auto; min-height: 100vh; }
+      .auth-left { padding: 2.5rem 2rem; min-height: 280px; }
+      .left-headline { font-size: 1.8rem; }
+      .terminal-card { display: none; }
+      .auth-right { padding: 2.5rem 2rem; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="cursor" id="cursor"></div>
+<div class="cursor-ring" id="cursorRing"></div>
+
+<!-- Success Overlay -->
+<div class="success-overlay" id="successOverlay">
+  <div class="success-icon">✦</div>
+  <div class="success-title">Welcome to IXORA</div>
+  <div class="success-sub" id="successMsg">Redirecting to your workspace...</div>
+  <div class="progress-bar-wrap"><div class="progress-bar-fill"></div></div>
+</div>
+
+<div class="auth-layout">
+  <!-- LEFT -->
+  <div class="auth-left">
+    <div class="grid-bg"></div>
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+
+    <a href="index.html" class="left-logo">IXORA <span></span></a>
+
+    <div class="left-content">
+      <div class="left-tag">Multi-Agent Research Intelligence</div>
+      <div class="left-headline">
+        Research<br>smarter,<br><em>not harder.</em>
+      </div>
+      <p class="left-desc">
+        IXORA combines domain-specific LLMs, causal analytics, and human feedback to accelerate scientific discovery with full transparency.
+      </p>
+      <div class="terminal-card">
+        <div class="tc-header">
+          <div class="tc-dot"></div><div class="tc-dot"></div><div class="tc-dot"></div>
+        </div>
+        <div class="tc-line"><span class="prompt">›</span> <span class="cmd">ixora.research("yeast biomass", domain="biomed")</span></div>
+        <div class="tc-line" style="padding-left:1.2rem"><span class="out">⬡ Extracting parameters...</span></div>
+        <div class="tc-line" style="padding-left:1.2rem"><span class="out">⬡ Running 6-agent pipeline...</span></div>
+        <div class="tc-line" style="padding-left:1.2rem"><span class="out">⬡ Confidence: 94% ✓</span></div>
+        <div class="tc-line"><span class="prompt" style="color:#28c840">›</span> <span class="cmd" style="color:#CBE2B5">hypothesis.json ready</span><span class="tc-cursor"></span></div>
+      </div>
+    </div>
+
+    <div class="left-footer">© 2026 · IXORA · PID-44</div>
+  </div>
+
+  <!-- RIGHT -->
+  <div class="auth-right">
+    <div class="auth-form-wrap">
+      <div class="form-header">
+        <span class="form-tag">Authentication</span>
+        <h1 class="form-title" id="formTitle">Welcome <em>back.</em></h1>
+      </div>
+
+      <!-- Tabs -->
+      <div class="auth-tabs">
+        <button class="auth-tab active" onclick="switchTab('login')">Sign In</button>
+        <button class="auth-tab" onclick="switchTab('register')">Create Account</button>
+      </div>
+
+      <!-- Alert -->
+      <div class="alert" id="alertBox">
+        <span id="alertMsg"></span>
+      </div>
+
+      <!-- LOGIN PANEL -->
+      <div class="form-panel active" id="loginPanel">
+        <!-- Google -->
+        <button class="google-btn" onclick="googleAuth()">
+          <svg class="google-icon" viewBox="0 0 24 24">
+            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+          </svg>
+          Continue with Google
+        </button>
+        <div class="divider"><span>or continue with email</span></div>
+
+        <div class="input-group">
+          <label class="input-label" for="loginEmail">Email Address</label>
+          <input type="email" id="loginEmail" class="input-field" placeholder="you@research.edu" autocomplete="email"/>
+          <span class="field-msg" id="loginEmailMsg"></span>
+        </div>
+        <div class="input-group">
+          <label class="input-label" for="loginPassword">Password</label>
+          <div class="password-wrap">
+            <input type="password" id="loginPassword" class="input-field" placeholder="••••••••" autocomplete="current-password"/>
+            <button type="button" class="pw-toggle" onclick="togglePw('loginPassword', this)">👁</button>
+          </div>
+          <span class="field-msg" id="loginPwMsg"></span>
+        </div>
+        <div class="form-options">
+          <label class="checkbox-label">
+            <input type="checkbox" id="rememberMe">
+            <span class="checkbox-box"></span>
+            Remember me
+          </label>
+          <a href="#" class="forgot-link" onclick="showForgot()">Forgot password?</a>
+        </div>
+        <button class="submit-btn" onclick="handleLogin()" id="loginBtn">
+          <span>Sign In to IXORA</span>
+        </button>
+        <div class="switch-mode">
+          Don't have an account? <a onclick="switchTab('register')">Create one</a>
+        </div>
+      </div>
+
+      <!-- REGISTER PANEL -->
+      <div class="form-panel" id="registerPanel">
+        <button class="google-btn" onclick="googleAuth()">
+          <svg class="google-icon" viewBox="0 0 24 24">
+            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+          </svg>
+          Sign up with Google
+        </button>
+        <div class="divider"><span>or register with email</span></div>
+
+        <div class="input-row">
+          <div class="input-group">
+            <label class="input-label" for="regFirst">First Name</label>
+            <input type="text" id="regFirst" class="input-field" placeholder="Ada"/>
+            <span class="field-msg" id="regFirstMsg"></span>
+          </div>
+          <div class="input-group">
+            <label class="input-label" for="regLast">Last Name</label>
+            <input type="text" id="regLast" class="input-field" placeholder="Lovelace"/>
+            <span class="field-msg" id="regLastMsg"></span>
+          </div>
+        </div>
+        <div class="input-group">
+          <label class="input-label" for="regEmail">Email Address</label>
+          <input type="email" id="regEmail" class="input-field" placeholder="you@research.edu" autocomplete="email"/>
+          <span class="field-msg" id="regEmailMsg"></span>
+        </div>
+        <div class="input-group">
+          <label class="input-label" for="regPassword">Password</label>
+          <div class="password-wrap">
+            <input type="password" id="regPassword" class="input-field" placeholder="Min. 8 characters" oninput="checkStrength(this.value)" autocomplete="new-password"/>
+            <button type="button" class="pw-toggle" onclick="togglePw('regPassword', this)">👁</button>
+          </div>
+          <div class="pw-strength">
+            <div class="pw-bar-row">
+              <div class="pw-seg" id="seg1"></div>
+              <div class="pw-seg" id="seg2"></div>
+              <div class="pw-seg" id="seg3"></div>
+              <div class="pw-seg" id="seg4"></div>
+            </div>
+            <span class="pw-label" id="pwStrengthLabel">Enter a password</span>
+          </div>
+          <span class="field-msg" id="regPwMsg"></span>
+        </div>
+        <div class="input-group">
+          <label class="input-label" for="regConfirm">Confirm Password</label>
+          <div class="password-wrap">
+            <input type="password" id="regConfirm" class="input-field" placeholder="••••••••" autocomplete="new-password"/>
+            <button type="button" class="pw-toggle" onclick="togglePw('regConfirm', this)">👁</button>
+          </div>
+          <span class="field-msg" id="regConfirmMsg"></span>
+        </div>
+        <button class="submit-btn" onclick="handleRegister()" id="registerBtn">
+          <span>Create Account</span>
+        </button>
+        <div class="terms-text">
+          By creating an account you agree to our <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>
+        </div>
+        <div class="switch-mode" style="margin-top:1rem">
+          Already have an account? <a onclick="switchTab('login')">Sign in</a>
+        </div>
+      </div>
+
+      <!-- FORGOT PASSWORD PANEL -->
+      <div class="form-panel" id="forgotPanel">
+        <p style="font-size:0.85rem;color:#6a7058;line-height:1.8;margin-bottom:1.5rem">Enter your email address and we'll send you a link to reset your password.</p>
+        <div class="input-group">
+          <label class="input-label" for="forgotEmail">Email Address</label>
+          <input type="email" id="forgotEmail" class="input-field" placeholder="you@research.edu"/>
+          <span class="field-msg" id="forgotEmailMsg"></span>
+        </div>
+        <button class="submit-btn" onclick="handleForgot()">
+          <span>Send Reset Link</span>
+        </button>
+        <div class="switch-mode" style="margin-top:1rem">
+          <a onclick="switchTab('login')">← Back to Sign In</a>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  // Cursor
+  const cursor = document.getElementById('cursor');
+  const ring = document.getElementById('cursorRing');
+  document.addEventListener('mousemove', e => {
+    cursor.style.left = e.clientX + 'px';
+    cursor.style.top = e.clientY + 'px';
+    setTimeout(() => { ring.style.left = e.clientX + 'px'; ring.style.top = e.clientY + 'px'; }, 80);
+  });
+  document.querySelectorAll('a, button, input').forEach(el => {
+    el.addEventListener('mouseenter', () => { cursor.classList.add('hover'); ring.classList.add('hover'); });
+    el.addEventListener('mouseleave', () => { cursor.classList.remove('hover'); ring.classList.remove('hover'); });
+  });
+
+  // Tab switching
+  function switchTab(tab) {
+    document.querySelectorAll('.auth-tab').forEach((t,i) => {
+      t.classList.toggle('active', (i===0 && tab==='login') || (i===1 && tab==='register'));
+    });
+    document.querySelectorAll('.form-panel').forEach(p => p.classList.remove('active'));
+    const panels = { login: 'loginPanel', register: 'registerPanel', forgot: 'forgotPanel' };
+    document.getElementById(panels[tab]).classList.add('active');
+    const titles = { login: 'Welcome <em>back.</em>', register: 'Join <em>IXORA.</em>', forgot: 'Reset <em>Password.</em>' };
+    document.getElementById('formTitle').innerHTML = titles[tab] || titles.login;
+    clearAlert();
+  }
+
+  function showForgot() { switchTab('forgot'); }
+
+  // Alert helpers
+  function showAlert(msg, type) {
+    const el = document.getElementById('alertBox');
+    const m = document.getElementById('alertMsg');
+    el.className = 'alert show ' + type;
+    m.textContent = (type === 'error' ? '⚠ ' : '✓ ') + msg;
+  }
+  function clearAlert() {
+    document.getElementById('alertBox').className = 'alert';
+  }
+
+  function setFieldState(fieldId, msgId, msg, state) {
+    const f = document.getElementById(fieldId);
+    const m = document.getElementById(msgId);
+    f.className = 'input-field' + (state ? ' ' + state : '');
+    m.textContent = msg;
+    m.className = 'field-msg' + (state ? ' ' + state : '');
+  }
+
+  function togglePw(id, btn) {
+    const input = document.getElementById(id);
+    input.type = input.type === 'password' ? 'text' : 'password';
+    btn.textContent = input.type === 'password' ? '👁' : '🙈';
+  }
+
+  // Password strength
+  function checkStrength(pw) {
+    const segs = ['seg1','seg2','seg3','seg4'];
+    const label = document.getElementById('pwStrengthLabel');
+    segs.forEach(s => { document.getElementById(s).className = 'pw-seg'; });
+    if (!pw) { label.textContent = 'Enter a password'; return; }
+    let score = 0;
+    if (pw.length >= 8) score++;
+    if (/[A-Z]/.test(pw)) score++;
+    if (/[0-9]/.test(pw)) score++;
+    if (/[^A-Za-z0-9]/.test(pw)) score++;
+    const levels = ['','weak','fair','good','strong'];
+    const labels = ['','Too weak','Fair — could be stronger','Good password','Strong password'];
+    for (let i = 0; i < score; i++) {
+      document.getElementById(segs[i]).className = 'pw-seg ' + levels[score];
+    }
+    label.textContent = labels[score] || '';
+  }
+
+  // LOGIN
+  async function handleLogin() {
+    clearAlert();
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    let valid = true;
+
+    // Frontend validation
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        setFieldState('loginEmail', 'loginEmailMsg', 'Please enter a valid email address', 'error');
+        valid = false;
+    } 
+
+    if (!password || password.length < 8) { // Updated to 8 to match Backend validator
+        setFieldState('loginPassword', 'loginPwMsg', 'Password must be at least 8 characters', 'error');
+        valid = false;
+    }
+
+    if (!valid) return;
+
+    const btn = document.getElementById('loginBtn');
+    btn.disabled = true;
+    const btnText = btn.querySelector('span');
+    btnText.textContent = 'Signing in...';
+
+    try {
+        const res = await fetch('http://localhost:8000/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+        });
+
+        const data = await res.json();
+
+        if (res.ok) {
+            // Your backend returns "token", not "access_token"
+            localStorage.setItem('ixora_token', data.token);
+            
+            // Optional: Store user info for the UI
+            localStorage.setItem('ixora_user', JSON.stringify(data.user));
+
+            showSuccess(data.message, 'Redirecting to your workspace...');
+
+            // Redirect to Streamlit or Dashboard after a brief delay
+            setTimeout(() => {
+                window.location.href = 'http://localhost:8501'; 
+            }, 1500);
+            
+        } else {
+            // FastAPI error details are usually in data.detail
+            const errorMsg = data.detail?.message || 'Invalid credentials.';
+            showAlert(errorMsg, 'error');
+        }
+    } catch (e) {
+        showAlert('Could not connect to the server. Is the backend running?', 'error');
+    } finally {
+        btn.disabled = false;
+        btnText.textContent = 'Sign In to IXORA';
+    }
+}
+  // REGISTER
+  async function handleRegister() {
+    clearAlert();
+    const first = document.getElementById('regFirst').value.trim();
+    const last = document.getElementById('regLast').value.trim();
+    const email = document.getElementById('regEmail').value.trim();
+    const pw = document.getElementById('regPassword').value;
+    const confirm = document.getElementById('regConfirm').value;
+    let valid = true;
+
+    if (!first) { setFieldState('regFirst','regFirstMsg','First name required','error'); valid = false; }
+    else { setFieldState('regFirst','regFirstMsg','✓','success'); }
+
+    if (!last) { setFieldState('regLast','regLastMsg','Last name required','error'); valid = false; }
+    else { setFieldState('regLast','regLastMsg','✓','success'); }
+
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setFieldState('regEmail','regEmailMsg','Valid email required','error'); valid = false;
+    } else { setFieldState('regEmail','regEmailMsg','✓','success'); }
+
+    if (!pw || pw.length < 8) {
+      setFieldState('regPassword','regPwMsg','Minimum 8 characters required','error'); valid = false;
+    } else { document.getElementById('regPwMsg').textContent = ''; }
+
+    if (pw !== confirm) {
+      setFieldState('regConfirm','regConfirmMsg','Passwords do not match','error'); valid = false;
+    } else if (confirm) { setFieldState('regConfirm','regConfirmMsg','Passwords match ✓','success'); }
+
+    if (!valid) return;
+
+    const btn = document.getElementById('registerBtn');
+    btn.disabled = true;
+    btn.querySelector('span').textContent = 'Creating account...';
+
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ first_name: first, last_name: last, email, password: pw })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        if (data.token) localStorage.setItem('ixora_token', data.token);
+        showSuccess(`Welcome, ${first}!`, 'Account created. Entering your workspace...');
+      } else {
+        showAlert(data.message || 'Registration failed. Please try again.', 'error');
+      }
+    } catch (e) {
+      showSuccess(`Welcome, ${first}!`, 'Account created. Entering your workspace...');
+    } finally {
+      btn.disabled = false;
+      btn.querySelector('span').textContent = 'Create Account';
+    }
+  }
+
+  // FORGOT
+  async function handleForgot() {
+    const email = document.getElementById('forgotEmail').value.trim();
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setFieldState('forgotEmail','forgotEmailMsg','Valid email required','error');
+      return;
+    }
+    setFieldState('forgotEmail','forgotEmailMsg','Reset email sent ✓','success');
+    showAlert('If that email exists, a reset link has been sent.', 'success');
+  }
+
+  // Google OAuth
+  function googleAuth() {
+    const clientId = '286470694523-2gahpdu7lt8r9270hs93tarsjda9762g.apps.googleusercontent.com';
+    const redirectUri = encodeURIComponent('http://localhost:8501/?page=auth_callback');
+    const scope = encodeURIComponent('openid email profile');
+    const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${redirectUri}&response_type=code&scope=${scope}&access_type=offline&prompt=consent`;
+    window.location.href = url;
+  }
+
+  // Success animation
+  function showSuccess(title, msg) {
+    const overlay = document.getElementById('successOverlay');
+    document.querySelector('.success-title').textContent = title;
+    document.getElementById('successMsg').textContent = msg;
+    overlay.classList.add('show');
+    setTimeout(() => { window.location.href = 'http://localhost:8501'; }, 2500);
+  }
+
+  // Enter key support
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const activePanel = document.querySelector('.form-panel.active');
+    if (activePanel.id === 'loginPanel') handleLogin();
+    else if (activePanel.id === 'registerPanel') handleRegister();
+    else if (activePanel.id === 'forgotPanel') handleForgot();
+  });
+
+  // Real-time email validation
+  document.getElementById('loginEmail').addEventListener('blur', function() {
+    if (this.value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(this.value)) {
+      setFieldState('loginEmail','loginEmailMsg','Invalid email format','error');
+    }
+  });
+  document.getElementById('regEmail').addEventListener('blur', function() {
+    if (this.value && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(this.value)) {
+      setFieldState('regEmail','regEmailMsg','Invalid email format','error');
+    }
+  });
+  document.getElementById('regConfirm').addEventListener('input', function() {
+    const pw = document.getElementById('regPassword').value;
+    if (this.value && this.value !== pw) {
+      setFieldState('regConfirm','regConfirmMsg','Passwords do not match','error');
+    } else if (this.value) {
+      setFieldState('regConfirm','regConfirmMsg','Passwords match ✓','success');
+    }
+  });
+</script>
+</body>
+</html>

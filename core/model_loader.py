@@ -19,6 +19,10 @@ import numpy as np
 from sentence_transformers import SentenceTransformer, util
 from llama_cpp import Llama
 from transformers import pipeline
+import sys
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
 
 logger = logging.getLogger("core.model_loader")
 

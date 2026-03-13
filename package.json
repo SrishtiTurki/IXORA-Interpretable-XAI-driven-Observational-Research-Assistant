@@ -1,0 +1,15 @@
+{
+  "name": "ixora",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "redis": "cd redis && redis-server.exe",
+    "celery": "celery -A core.celery_app.app worker --loglevel=info --pool=solo",
+    "api": "uvicorn core.main:app --reload --port 8000",
+    "dev": "concurrently --kill-others-on-fail \"npm run redis\" \"npm run celery\" \"npm run api\"",
+    "dev:windows": "concurrently --kill-others-on-fail \"cd redis && redis-server.exe\" \"celery -A core.celery_app.app worker --loglevel=info --pool=solo\" \"uvicorn core.main:app --reload --port 8000\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

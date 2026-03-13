@@ -20,3 +20,13 @@ numpy
 scipy
 pandas
 celery  # If you're using the Celery analytics tasks
+sentence-transformers 
+llama-cpp-python
+pymongo
+passlib
+jwt
+scikit-optimize
+dowhy
+ctransformers
+econml
+sacremoses

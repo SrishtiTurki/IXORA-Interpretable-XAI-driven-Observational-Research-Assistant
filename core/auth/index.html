@@ -1,0 +1,1271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>IXORA — Multi-Agent Research Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@300;400&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --sage-light: #E7FBE6;
+      --sage-mid: #CBE2B5;
+      --sage-dark: #86AB89;
+      --gold-warm: #A28B55;
+      --gold-light: #B99470;
+      --cream: #FEFAE0;
+      --moss: #A6B37D;
+      --ink: #1a1f14;
+      --ink-light: #2d3526;
+      --white: #ffffff;
+    }
+
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: 'Syne', sans-serif;
+      background: var(--cream);
+      color: var(--ink);
+      overflow-x: hidden;
+      cursor: none;
+    }
+
+    /* Custom Cursor */
+    .cursor {
+      width: 12px; height: 12px;
+      background: var(--gold-warm);
+      border-radius: 50%;
+      position: fixed; top: 0; left: 0;
+      pointer-events: none; z-index: 9999;
+      transform: translate(-50%, -50%);
+      transition: transform 0.1s, width 0.3s, height 0.3s, background 0.3s;
+      mix-blend-mode: multiply;
+    }
+    .cursor-ring {
+      width: 40px; height: 40px;
+      border: 1.5px solid var(--gold-warm);
+      border-radius: 50%;
+      position: fixed; top: 0; left: 0;
+      pointer-events: none; z-index: 9998;
+      transform: translate(-50%, -50%);
+      transition: transform 0.15s ease-out, width 0.3s, height 0.3s, opacity 0.3s;
+      opacity: 0.6;
+    }
+    .cursor.hover { width: 20px; height: 20px; background: var(--sage-dark); }
+    .cursor-ring.hover { width: 60px; height: 60px; opacity: 0.3; }
+
+    /* NAV */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0;
+      z-index: 100;
+      padding: 1.5rem 4rem;
+      display: flex; align-items: center; justify-content: space-between;
+      background: transparent;
+      transition: background 0.4s, padding 0.4s, backdrop-filter 0.4s;
+    }
+    nav.scrolled {
+      background: rgba(254, 250, 224, 0.85);
+      backdrop-filter: blur(20px);
+      padding: 1rem 4rem;
+      border-bottom: 1px solid rgba(162, 139, 85, 0.15);
+    }
+    .nav-logo {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 2rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      color: var(--ink);
+      text-decoration: none;
+      display: flex; align-items: center; gap: 0.5rem;
+    }
+    .nav-logo span {
+      width: 8px; height: 8px;
+      background: var(--gold-warm);
+      border-radius: 50%;
+      display: inline-block;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%,100% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.5); opacity: 0.6; }
+    }
+    .nav-links {
+      display: flex; gap: 2.5rem; align-items: center;
+      list-style: none;
+    }
+    .nav-links a {
+      font-family: 'Syne', sans-serif;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--ink-light);
+      text-decoration: none;
+      position: relative;
+      transition: color 0.3s;
+    }
+    .nav-links a::after {
+      content: '';
+      position: absolute; bottom: -4px; left: 0;
+      width: 0; height: 1px;
+      background: var(--gold-warm);
+      transition: width 0.3s;
+    }
+    .nav-links a:hover { color: var(--gold-warm); }
+    .nav-links a:hover::after { width: 100%; }
+    .nav-cta {
+      padding: 0.6rem 1.8rem;
+      background: var(--ink);
+      color: var(--cream) !important;
+      border-radius: 2px;
+      font-size: 0.7rem !important;
+      letter-spacing: 0.15em;
+      transition: background 0.3s, transform 0.2s !important;
+    }
+    .nav-cta:hover { background: var(--gold-warm) !important; transform: translateY(-1px); }
+    .nav-cta::after { display: none !important; }
+
+    /* HERO */
+    #hero {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-bg {
+      position: absolute; inset: 0;
+      background:
+        radial-gradient(ellipse 80% 60% at 70% 40%, rgba(134,171,137,0.12) 0%, transparent 60%),
+        radial-gradient(ellipse 50% 40% at 20% 70%, rgba(162,139,85,0.08) 0%, transparent 50%),
+        linear-gradient(165deg, var(--cream) 0%, #f5f0d0 100%);
+      z-index: 0;
+    }
+    .hero-grid-overlay {
+      position: absolute; inset: 0;
+      background-image:
+        linear-gradient(rgba(162,139,85,0.06) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(162,139,85,0.06) 1px, transparent 1px);
+      background-size: 60px 60px;
+      z-index: 1;
+    }
+    .hero-left {
+      position: relative; z-index: 2;
+      padding: 12rem 4rem 6rem 6rem;
+      display: flex; flex-direction: column; justify-content: center;
+    }
+    .hero-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--gold-warm);
+      display: flex; align-items: center; gap: 0.75rem;
+      margin-bottom: 2rem;
+      opacity: 0;
+      animation: fadeUp 0.8s 0.3s forwards;
+    }
+    .hero-tag::before {
+      content: '';
+      width: 30px; height: 1px;
+      background: var(--gold-warm);
+    }
+    h1.hero-title {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: clamp(3.5rem, 6vw, 6rem);
+      font-weight: 300;
+      line-height: 1.0;
+      color: var(--ink);
+      letter-spacing: -0.02em;
+      margin-bottom: 1.5rem;
+      opacity: 0;
+      animation: fadeUp 0.9s 0.5s forwards;
+    }
+    h1.hero-title em {
+      font-style: italic;
+      color: var(--gold-warm);
+    }
+    h1.hero-title .outline {
+      -webkit-text-stroke: 1.5px var(--ink);
+      color: transparent;
+    }
+    .hero-desc {
+      font-family: 'Syne', sans-serif;
+      font-size: 1rem;
+      line-height: 1.8;
+      color: #5a6050;
+      max-width: 420px;
+      margin-bottom: 3rem;
+      opacity: 0;
+      animation: fadeUp 0.9s 0.7s forwards;
+    }
+    .hero-actions {
+      display: flex; gap: 1.2rem; align-items: center;
+      opacity: 0;
+      animation: fadeUp 0.9s 0.9s forwards;
+    }
+    .btn-primary {
+      padding: 1rem 2.5rem;
+      background: var(--ink);
+      color: var(--cream);
+      font-family: 'Syne', sans-serif;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      text-decoration: none;
+      border: 2px solid var(--ink);
+      border-radius: 2px;
+      transition: all 0.3s;
+      position: relative; overflow: hidden;
+    }
+    .btn-primary::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: var(--gold-warm);
+      transform: translateX(-101%);
+      transition: transform 0.3s ease;
+      z-index: -1;
+    }
+    .btn-primary:hover { border-color: var(--gold-warm); color: var(--white); }
+    .btn-primary:hover::before { transform: translateX(0); }
+    .btn-secondary {
+      font-family: 'Syne', sans-serif;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ink);
+      text-decoration: none;
+      display: flex; align-items: center; gap: 0.5rem;
+      transition: gap 0.3s, color 0.3s;
+    }
+    .btn-secondary:hover { gap: 0.9rem; color: var(--gold-warm); }
+    .btn-secondary::after { content: '→'; font-size: 1rem; }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(30px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Hero Right - Visual Panel */
+    .hero-right {
+      position: relative; z-index: 2;
+      display: flex; align-items: center; justify-content: center;
+      padding: 8rem 4rem;
+    }
+    .hero-visual {
+      width: 100%;
+      max-width: 480px;
+      position: relative;
+      opacity: 0;
+      animation: fadeIn 1.2s 0.8s forwards;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: scale(0.96); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    .visual-card {
+      background: rgba(254,250,224,0.85);
+      border: 1px solid rgba(162,139,85,0.25);
+      border-radius: 12px;
+      padding: 2rem;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 40px 80px rgba(26,31,20,0.08), 0 2px 4px rgba(162,139,85,0.1);
+      position: relative;
+    }
+    .visual-card::before {
+      content: '';
+      position: absolute;
+      inset: -1px;
+      border-radius: 13px;
+      background: linear-gradient(135deg, rgba(162,139,85,0.3), transparent 50%, rgba(134,171,137,0.2));
+      z-index: -1;
+    }
+    .vc-header {
+      display: flex; align-items: center; gap: 0.75rem;
+      margin-bottom: 1.5rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid rgba(162,139,85,0.15);
+    }
+    .vc-dots { display: flex; gap: 6px; }
+    .vc-dots span {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+    }
+    .vc-dots span:nth-child(1) { background: #ff5f57; }
+    .vc-dots span:nth-child(2) { background: #febc2e; }
+    .vc-dots span:nth-child(3) { background: #28c840; }
+    .vc-title {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      color: #8a9070;
+      letter-spacing: 0.1em;
+    }
+    .vc-badge {
+      margin-left: auto;
+      padding: 3px 8px;
+      background: var(--sage-light);
+      border: 1px solid var(--sage-mid);
+      border-radius: 20px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.55rem;
+      color: var(--sage-dark);
+      letter-spacing: 0.08em;
+    }
+    .vc-domain {
+      display: flex; align-items: center; gap: 0.5rem;
+      margin-bottom: 1rem;
+    }
+    .domain-pill {
+      padding: 0.3rem 0.8rem;
+      border-radius: 20px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.6rem;
+      letter-spacing: 0.06em;
+      font-weight: 400;
+    }
+    .domain-pill.active { background: var(--sage-light); border: 1px solid var(--sage-mid); color: var(--ink); }
+    .domain-pill.inactive { background: transparent; border: 1px solid rgba(162,139,85,0.2); color: #a0a88a; }
+    .vc-query {
+      background: rgba(231,251,230,0.4);
+      border: 1px solid rgba(134,171,137,0.2);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 1.2rem;
+    }
+    .vc-query p {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      color: var(--ink-light);
+      line-height: 1.7;
+    }
+    .vc-agents {
+      display: grid; grid-template-columns: repeat(3, 1fr);
+      gap: 0.5rem;
+      margin-bottom: 1.2rem;
+    }
+    .agent-step {
+      padding: 0.6rem;
+      background: rgba(255,255,255,0.5);
+      border: 1px solid rgba(162,139,85,0.15);
+      border-radius: 6px;
+      text-align: center;
+    }
+    .agent-step .icon { font-size: 1rem; margin-bottom: 0.25rem; display: block; }
+    .agent-step .name {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.5rem;
+      color: var(--gold-warm);
+      letter-spacing: 0.05em;
+      display: block;
+    }
+    .agent-step .status {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.5rem;
+      color: #28c840;
+    }
+    .vc-confidence {
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .conf-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.6rem;
+      color: #8a9070;
+    }
+    .conf-bar-wrap {
+      flex: 1; margin: 0 1rem;
+      height: 4px;
+      background: rgba(162,139,85,0.15);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .conf-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--sage-dark), var(--gold-warm));
+      border-radius: 2px;
+      animation: growBar 2s 1.5s ease-out forwards;
+      width: 0;
+    }
+    @keyframes growBar { to { width: 94%; } }
+    .conf-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      font-weight: 400;
+      color: var(--gold-warm);
+    }
+    .float-badge {
+      position: absolute;
+      padding: 0.6rem 1rem;
+      background: var(--cream);
+      border: 1px solid rgba(162,139,85,0.3);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(26,31,20,0.1);
+    }
+    .float-badge-1 {
+      top: -20px; right: -30px;
+      animation: float1 4s ease-in-out infinite;
+    }
+    .float-badge-2 {
+      bottom: -20px; left: -30px;
+      animation: float2 4s ease-in-out infinite;
+    }
+    @keyframes float1 {
+      0%,100% { transform: translateY(0) rotate(-2deg); }
+      50% { transform: translateY(-10px) rotate(0deg); }
+    }
+    @keyframes float2 {
+      0%,100% { transform: translateY(0) rotate(2deg); }
+      50% { transform: translateY(10px) rotate(0deg); }
+    }
+    .fb-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.55rem;
+      color: var(--gold-warm);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+    .fb-val {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 1.4rem;
+      font-weight: 600;
+      color: var(--ink);
+      display: block;
+    }
+
+    /* MARQUEE */
+    .marquee-wrap {
+      background: var(--ink);
+      padding: 1rem 0;
+      overflow: hidden;
+      position: relative;
+    }
+    .marquee-track {
+      display: flex;
+      animation: marquee 25s linear infinite;
+      white-space: nowrap;
+    }
+    .marquee-item {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 1rem;
+      font-style: italic;
+      color: var(--sage-mid);
+      padding: 0 3rem;
+      display: flex; align-items: center; gap: 1rem;
+    }
+    .marquee-dot {
+      width: 4px; height: 4px;
+      background: var(--gold-warm);
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    @keyframes marquee {
+      from { transform: translateX(0); }
+      to { transform: translateX(-50%); }
+    }
+
+    /* FEATURES */
+    #features {
+      padding: 8rem 6rem;
+      position: relative;
+    }
+    .section-header {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4rem;
+      margin-bottom: 5rem;
+      align-items: end;
+    }
+    .section-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+      color: var(--gold-warm);
+      display: flex; align-items: center; gap: 0.75rem;
+      margin-bottom: 1.5rem;
+    }
+    .section-tag::before { content: ''; width: 20px; height: 1px; background: var(--gold-warm); }
+    h2.section-title {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: clamp(2.5rem, 4vw, 4rem);
+      font-weight: 300;
+      line-height: 1.1;
+      color: var(--ink);
+    }
+    h2.section-title em { font-style: italic; color: var(--gold-warm); }
+    .section-desc {
+      font-size: 0.95rem;
+      line-height: 1.8;
+      color: #5a6050;
+      align-self: end;
+    }
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.5px;
+      background: rgba(162,139,85,0.15);
+      border: 1px solid rgba(162,139,85,0.15);
+    }
+    .feat-card {
+      background: var(--cream);
+      padding: 2.5rem;
+      position: relative;
+      overflow: hidden;
+      transition: background 0.3s;
+    }
+    .feat-card:hover { background: var(--sage-light); }
+    .feat-card::before {
+      content: '';
+      position: absolute; bottom: 0; left: 0;
+      width: 0; height: 2px;
+      background: var(--gold-warm);
+      transition: width 0.4s;
+    }
+    .feat-card:hover::before { width: 100%; }
+    .feat-num {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 0.75rem;
+      color: var(--gold-warm);
+      letter-spacing: 0.1em;
+      margin-bottom: 2rem;
+      display: block;
+    }
+    .feat-icon {
+      font-size: 2rem;
+      margin-bottom: 1rem;
+      display: block;
+    }
+    .feat-title {
+      font-family: 'Syne', sans-serif;
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: var(--ink);
+      margin-bottom: 0.75rem;
+    }
+    .feat-desc {
+      font-size: 0.85rem;
+      line-height: 1.75;
+      color: #6a7058;
+    }
+
+    /* HOW IT WORKS */
+    #how {
+      padding: 8rem 6rem;
+      background: var(--ink);
+      position: relative;
+      overflow: hidden;
+    }
+    #how::before {
+      content: '';
+      position: absolute; top: -100px; right: -100px;
+      width: 500px; height: 500px;
+      background: radial-gradient(circle, rgba(134,171,137,0.08) 0%, transparent 70%);
+      border-radius: 50%;
+    }
+    #how .section-tag { color: var(--sage-mid); }
+    #how .section-tag::before { background: var(--sage-mid); }
+    #how h2.section-title { color: var(--cream); }
+    #how h2.section-title em { color: var(--sage-mid); }
+    #how .section-desc { color: rgba(254,250,224,0.5); }
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 0;
+      margin-top: 5rem;
+      position: relative;
+    }
+    .steps-grid::before {
+      content: '';
+      position: absolute; top: 32px; left: 10%; right: 10%;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(162,139,85,0.4), transparent);
+    }
+    .step-item {
+      text-align: center;
+      padding: 0 1.5rem;
+      position: relative;
+    }
+    .step-num {
+      width: 64px; height: 64px;
+      border: 1.5px solid rgba(162,139,85,0.4);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      margin: 0 auto 1.5rem;
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 1.5rem;
+      color: var(--gold-light);
+      position: relative; z-index: 2;
+      background: var(--ink);
+      transition: all 0.3s;
+    }
+    .step-item:hover .step-num {
+      border-color: var(--gold-warm);
+      background: rgba(162,139,85,0.1);
+      transform: scale(1.1);
+    }
+    .step-name {
+      font-family: 'Syne', sans-serif;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--sage-mid);
+      margin-bottom: 0.5rem;
+    }
+    .step-desc {
+      font-size: 0.75rem;
+      line-height: 1.7;
+      color: rgba(254,250,224,0.4);
+    }
+
+    /* METRICS */
+    #metrics {
+      padding: 6rem;
+      background: var(--sage-light);
+      border-top: 1px solid var(--sage-mid);
+      border-bottom: 1px solid var(--sage-mid);
+    }
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 2rem;
+    }
+    .metric-card {
+      text-align: center;
+      padding: 2rem;
+      position: relative;
+    }
+    .metric-card::after {
+      content: '';
+      position: absolute; right: 0; top: 20%; bottom: 20%;
+      width: 1px;
+      background: rgba(134,171,137,0.4);
+    }
+    .metric-card:last-child::after { display: none; }
+    .metric-val {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: clamp(3rem, 5vw, 4.5rem);
+      font-weight: 300;
+      color: var(--ink);
+      line-height: 1;
+      display: block;
+    }
+    .metric-val em { color: var(--gold-warm); font-style: normal; }
+    .metric-label {
+      font-family: 'Syne', sans-serif;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      color: var(--sage-dark);
+      margin-top: 0.5rem;
+      display: block;
+    }
+
+    /* DOMAIN SHOWCASE */
+    #domains {
+      padding: 8rem 6rem;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6rem;
+      align-items: center;
+    }
+    .domain-content .section-tag { }
+    .domain-tabs {
+      display: flex; gap: 0; margin: 2rem 0;
+      border: 1px solid rgba(162,139,85,0.2);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .dtab {
+      flex: 1; padding: 0.75rem;
+      text-align: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.65rem;
+      letter-spacing: 0.1em;
+      cursor: pointer;
+      transition: all 0.3s;
+      color: #8a9070;
+      background: transparent;
+      border: none;
+    }
+    .dtab.active {
+      background: var(--ink);
+      color: var(--cream);
+    }
+    .dtab:hover:not(.active) { background: rgba(162,139,85,0.1); }
+    .domain-info {
+      display: none;
+    }
+    .domain-info.active { display: block; }
+    .domain-info p {
+      font-size: 0.9rem;
+      line-height: 1.8;
+      color: #5a6050;
+      margin-bottom: 1rem;
+    }
+    .domain-tags {
+      display: flex; flex-wrap: wrap; gap: 0.5rem;
+    }
+    .dtag {
+      padding: 0.3rem 0.75rem;
+      background: var(--sage-light);
+      border: 1px solid var(--sage-mid);
+      border-radius: 20px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.6rem;
+      color: var(--ink-light);
+    }
+    .domain-visual {
+      position: relative;
+    }
+    .dv-card {
+      background: linear-gradient(135deg, var(--ink) 0%, #2d3526 100%);
+      border-radius: 12px;
+      padding: 2rem;
+      box-shadow: 0 40px 80px rgba(26,31,20,0.15);
+      position: relative;
+      overflow: hidden;
+    }
+    .dv-card::before {
+      content: '';
+      position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: linear-gradient(90deg, var(--sage-dark), var(--gold-warm));
+    }
+    .dv-label {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.55rem;
+      letter-spacing: 0.15em;
+      color: var(--sage-mid);
+      text-transform: uppercase;
+      margin-bottom: 1.5rem;
+    }
+    .dv-graph {
+      display: flex; align-items: flex-end; gap: 8px;
+      height: 100px;
+      margin-bottom: 1.5rem;
+    }
+    .dv-bar {
+      flex: 1;
+      border-radius: 3px 3px 0 0;
+      background: linear-gradient(to top, var(--sage-dark), var(--sage-mid));
+      opacity: 0.7;
+      transition: opacity 0.3s, transform 0.3s;
+      animation: barGrow 1s ease-out forwards;
+      transform-origin: bottom;
+    }
+    .dv-bar:hover { opacity: 1; transform: scaleY(1.05); }
+    @keyframes barGrow {
+      from { transform: scaleY(0); }
+      to { transform: scaleY(1); }
+    }
+    .dv-params {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
+    .dv-param {
+      padding: 0.75rem;
+      background: rgba(255,255,255,0.05);
+      border-radius: 6px;
+      border: 1px solid rgba(134,171,137,0.15);
+    }
+    .dv-param-key {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.55rem;
+      color: var(--sage-mid);
+      display: block; margin-bottom: 0.25rem;
+    }
+    .dv-param-val {
+      font-family: 'Syne', sans-serif;
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: var(--cream);
+    }
+    .dv-param-conf {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.5rem;
+      color: #28c840;
+      margin-left: 0.25rem;
+    }
+
+    /* CTA */
+    #cta {
+      padding: 8rem 6rem;
+      background: linear-gradient(135deg, var(--ink) 0%, #1d2918 100%);
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+    #cta::before {
+      content: 'IXORA';
+      position: absolute;
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 20vw;
+      font-weight: 300;
+      color: rgba(254,250,224,0.025);
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      letter-spacing: 0.2em;
+      pointer-events: none;
+    }
+    #cta .section-tag { justify-content: center; color: var(--sage-mid); }
+    #cta .section-tag::before { background: var(--sage-mid); }
+    #cta h2 {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: clamp(2.5rem, 5vw, 5rem);
+      font-weight: 300;
+      color: var(--cream);
+      margin: 1.5rem 0;
+      line-height: 1.1;
+    }
+    #cta h2 em { font-style: italic; color: var(--sage-mid); }
+    #cta p {
+      font-size: 0.95rem;
+      color: rgba(254,250,224,0.5);
+      max-width: 500px;
+      margin: 0 auto 3rem;
+      line-height: 1.8;
+    }
+    .cta-actions {
+      display: flex; gap: 1.5rem; justify-content: center; align-items: center;
+    }
+    .btn-cta {
+      padding: 1.1rem 3rem;
+      background: var(--gold-warm);
+      color: var(--cream);
+      font-family: 'Syne', sans-serif;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      text-decoration: none;
+      border-radius: 2px;
+      transition: all 0.3s;
+    }
+    .btn-cta:hover { background: var(--gold-light); transform: translateY(-2px); box-shadow: 0 10px 30px rgba(162,139,85,0.3); }
+    .btn-ghost {
+      padding: 1.1rem 3rem;
+      border: 1px solid rgba(254,250,224,0.2);
+      color: rgba(254,250,224,0.7);
+      font-family: 'Syne', sans-serif;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      text-decoration: none;
+      border-radius: 2px;
+      transition: all 0.3s;
+    }
+    .btn-ghost:hover { border-color: var(--cream); color: var(--cream); }
+
+    /* FOOTER */
+    footer {
+      background: var(--ink);
+      padding: 3rem 6rem;
+      display: flex; align-items: center; justify-content: space-between;
+      border-top: 1px solid rgba(254,250,224,0.06);
+    }
+    .footer-logo {
+      font-family: 'Cormorant Garamond', serif;
+      font-size: 1.5rem;
+      color: var(--cream);
+      font-weight: 300;
+      letter-spacing: 0.1em;
+    }
+    .footer-copy {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.55rem;
+      color: rgba(254,250,224,0.3);
+      letter-spacing: 0.1em;
+    }
+    .footer-links {
+      display: flex; gap: 2rem;
+    }
+    .footer-links a {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.6rem;
+      letter-spacing: 0.1em;
+      color: rgba(254,250,224,0.4);
+      text-decoration: none;
+      text-transform: uppercase;
+      transition: color 0.3s;
+    }
+    .footer-links a:hover { color: var(--sage-mid); }
+
+    /* REVEAL ANIMATIONS */
+    .reveal {
+      opacity: 0; transform: translateY(40px);
+      transition: opacity 0.8s ease, transform 0.8s ease;
+    }
+    .reveal.visible { opacity: 1; transform: translateY(0); }
+
+    /* RESPONSIVE */
+    @media (max-width: 1200px) {
+      #hero { grid-template-columns: 1fr; }
+      .hero-right { display: none; }
+      nav, .hero-left { padding-left: 3rem; padding-right: 3rem; }
+      #features, #how, #metrics, #domains, #cta, footer { padding: 5rem 3rem; }
+      .features-grid { grid-template-columns: repeat(2, 1fr); }
+      .steps-grid { grid-template-columns: repeat(3, 1fr); gap: 2rem; }
+      .steps-grid::before { display: none; }
+      .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+      #domains { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 768px) {
+      nav { padding: 1.5rem 1.5rem; }
+      .nav-links { display: none; }
+      .hero-left { padding: 8rem 2rem 4rem; }
+      #features, #how, #metrics, #cta, footer { padding: 4rem 2rem; }
+      .features-grid { grid-template-columns: 1fr; }
+      .steps-grid { grid-template-columns: 1fr 1fr; }
+      .metrics-grid { grid-template-columns: 1fr 1fr; }
+      .section-header { grid-template-columns: 1fr; }
+      .cta-actions { flex-direction: column; }
+      footer { flex-direction: column; gap: 1.5rem; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Custom Cursor -->
+<div class="cursor" id="cursor"></div>
+<div class="cursor-ring" id="cursorRing"></div>
+
+<!-- NAV -->
+<nav id="navbar">
+  <a href="/" class="nav-logo">IXORA <span></span></a>
+  <ul class="nav-links">
+    <li><a href="#features">Features</a></li>
+    <li><a href="#how">Methodology</a></li>
+    <li><a href="#domains">Domains</a></li>
+    <li><a href="login.html" class="nav-cta">Sign In</a></li>
+  </ul>
+</nav>
+
+<!-- HERO -->
+<section id="hero">
+  <div class="hero-bg"></div>
+  <div class="hero-grid-overlay"></div>
+  <div class="hero-left">
+    <div class="hero-tag">Multi-Agent Research Intelligence</div>
+    <h1 class="hero-title">
+      Where <em>Science</em><br>Meets<br><span class="outline">Intelligence</span>
+    </h1>
+    <p class="hero-desc">
+      IXORA transforms how researchers design experiments — combining domain-specific LLMs, causal analytics, and human-in-the-loop feedback for transparent, reproducible science.
+    </p>
+    <div class="hero-actions">
+      <a href="login.html" class="btn-primary">Begin Research</a>
+      <a href="#how" class="btn-secondary">Explore System</a>
+    </div>
+  </div>
+  <div class="hero-right">
+    <div class="hero-visual">
+      <div class="float-badge float-badge-1">
+        <span class="fb-label">Confidence</span>
+        <span class="fb-val">94%</span>
+      </div>
+      <div class="visual-card">
+        <div class="vc-header">
+          <div class="vc-dots"><span></span><span></span><span></span></div>
+          <span class="vc-title">IXORA · Research Session</span>
+          <span class="vc-badge">● LIVE</span>
+        </div>
+        <div class="vc-domain">
+          <button class="domain-pill active">Biomedical</button>
+          <button class="domain-pill inactive">Computer Science</button>
+          <button class="domain-pill inactive">Fallback</button>
+        </div>
+        <div class="vc-query">
+          <p>"Statistically analyze the impact of pH (3–8) and temperature (20–37 °C) on yeast biomass yield..."</p>
+        </div>
+        <div class="vc-agents">
+          <div class="agent-step"><span class="icon">⬡</span><span class="name">Extractor</span><span class="status">✓ done</span></div>
+          <div class="agent-step"><span class="icon">⬡</span><span class="name">Draft</span><span class="status">✓ done</span></div>
+          <div class="agent-step"><span class="icon">⬡</span><span class="name">Analytics</span><span class="status">✓ done</span></div>
+          <div class="agent-step"><span class="icon">⬡</span><span class="name">Hypothesis</span><span class="status">✓ done</span></div>
+          <div class="agent-step"><span class="icon">⬡</span><span class="name">Synthesizer</span><span class="status">✓ done</span></div>
+          <div class="agent-step"><span class="icon">⬡</span><span class="name">Validator</span><span class="status">✓ done</span></div>
+        </div>
+        <div class="vc-confidence">
+          <span class="conf-label">OVERALL SCORE</span>
+          <div class="conf-bar-wrap"><div class="conf-bar"></div></div>
+          <span class="conf-val">94%</span>
+        </div>
+      </div>
+      <div class="float-badge float-badge-2">
+        <span class="fb-label">Pipeline</span>
+        <span class="fb-val">6/6</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- MARQUEE -->
+<div class="marquee-wrap">
+  <div class="marquee-track" id="marqueeTrack"></div>
+</div>
+
+<!-- FEATURES -->
+<section id="features">
+  <div class="section-header reveal">
+    <div>
+      <div class="section-tag">Core Capabilities</div>
+      <h2 class="section-title">Built for <em>Rigorous</em><br>Scientific Discovery</h2>
+    </div>
+    <p class="section-desc">A complete research intelligence platform combining domain-aware LLMs, multi-agent reasoning, explainable analytics, and human feedback — all in one transparent system.</p>
+  </div>
+  <div class="features-grid reveal">
+    <div class="feat-card">
+      <span class="feat-num">01</span>
+      <span class="feat-icon">🧠</span>
+      <div class="feat-title">Domain-Aware Intelligence</div>
+      <p class="feat-desc">Specialized models for Biomedical (BioGPT) and Computer Science (Qwen2.5-Coder) domains with strict guardrails preventing cross-domain hallucination.</p>
+    </div>
+    <div class="feat-card">
+      <span class="feat-num">02</span>
+      <span class="feat-icon">⬡</span>
+      <div class="feat-title">Multi-Agent Workflow</div>
+      <p class="feat-desc">Six specialized agents — Extractor, Draft, Hypothesis, Analytics, Synthesizer, and Validator — collaborate through a LangGraph orchestration pipeline.</p>
+    </div>
+    <div class="feat-card">
+      <span class="feat-num">03</span>
+      <span class="feat-icon">📊</span>
+      <div class="feat-title">Explainable Analytics</div>
+      <p class="feat-desc">SHAP/LIME feature importance, Bayesian optimization, and DoWhy causal inference add quantitative rigour to every hypothesis generated.</p>
+    </div>
+    <div class="feat-card">
+      <span class="feat-num">04</span>
+      <span class="feat-icon">🔍</span>
+      <div class="feat-title">White-box Traceability</div>
+      <p class="feat-desc">Full pipeline trace logs showing which model/agent contributed each step. Researchers can inspect, reject, and override any reasoning node.</p>
+    </div>
+    <div class="feat-card">
+      <span class="feat-num">05</span>
+      <span class="feat-icon">🔄</span>
+      <div class="feat-title">Human-in-the-Loop RLHF</div>
+      <p class="feat-desc">Continuous improvement through researcher feedback. Reward modeling and preference ranking adapt the system to domain-specific scientific standards.</p>
+    </div>
+    <div class="feat-card">
+      <span class="feat-num">06</span>
+      <span class="feat-icon">📚</span>
+      <div class="feat-title">Literature Augmentation</div>
+      <p class="feat-desc">Automatic ArXiv search integrated into the agent workflow, grounding every hypothesis in peer-reviewed evidence with direct PDF access.</p>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section id="how">
+  <div class="section-header reveal">
+    <div>
+      <div class="section-tag">Methodology</div>
+      <h2 class="section-title">The <em>Complete</em><br>Data Flow</h2>
+    </div>
+    <p class="section-desc" style="color:rgba(254,250,224,0.4)">From natural language query to publication-ready hypothesis — every step is traced, validated, and open to researcher intervention.</p>
+  </div>
+  <div class="steps-grid reveal">
+    <div class="step-item">
+      <div class="step-num">I</div>
+      <div class="step-name">Intent Detection</div>
+      <p class="step-desc">Qwen-based router classifies domain and activates domain-specific guardrails</p>
+    </div>
+    <div class="step-item">
+      <div class="step-num">II</div>
+      <div class="step-name">Parameter Extraction</div>
+      <p class="step-desc">JSON-schema enforced extraction of experimental parameters with confidence scores</p>
+    </div>
+    <div class="step-item">
+      <div class="step-num">III</div>
+      <div class="step-name">Agent Pipeline</div>
+      <p class="step-desc">6-stage LangGraph workflow: Draft → Hypothesis → Analytics → Synthesize → Validate</p>
+    </div>
+    <div class="step-item">
+      <div class="step-num">IV</div>
+      <div class="step-name">Analytics Engine</div>
+      <p class="step-desc">Parallel SHAP/LIME, Bayesian optimization, and causal inference via Celery</p>
+    </div>
+    <div class="step-item">
+      <div class="step-num">V</div>
+      <div class="step-name">RLHF Feedback</div>
+      <p class="step-desc">Researcher rates response quality; reward model updates for session improvement</p>
+    </div>
+  </div>
+</section>
+
+<!-- METRICS -->
+<section id="metrics">
+  <div class="metrics-grid reveal">
+    <div class="metric-card">
+      <span class="metric-val">6<em>×</em></span>
+      <span class="metric-label">Specialized Agents</span>
+    </div>
+    <div class="metric-card">
+      <span class="metric-val">94<em>%</em></span>
+      <span class="metric-label">Avg. Confidence Score</span>
+    </div>
+    <div class="metric-card">
+      <span class="metric-val">33<em>s</em></span>
+      <span class="metric-label">Avg. Pipeline Duration</span>
+    </div>
+    <div class="metric-card">
+      <span class="metric-val">2<em>+</em></span>
+      <span class="metric-label">Domain Models Supported</span>
+    </div>
+  </div>
+</section>
+
+<!-- DOMAINS -->
+<section id="domains">
+  <div class="domain-content reveal">
+    <div class="section-tag">Domain Intelligence</div>
+    <h2 class="section-title">Specialized for <em>Your</em><br>Research Field</h2>
+    <p style="font-size:0.9rem;line-height:1.8;color:#5a6050;margin:1.5rem 0;">Each domain activates a specialized model, vocabulary, and reasoning chain — ensuring scientifically accurate outputs, not generic AI responses.</p>
+    <div class="domain-tabs">
+      <button class="dtab active" onclick="switchDomain('biomed', this)">BIOMEDICAL</button>
+      <button class="dtab" onclick="switchDomain('cs', this)">COMP. SCI.</button>
+      <button class="dtab" onclick="switchDomain('general', this)">GENERAL</button>
+    </div>
+    <div class="domain-info active" id="dom-biomed">
+      <p>BioGPT (Microsoft) powers biomedical reasoning — understanding experimental parameters like pH, temperature, drug doses, and biological markers with clinical precision.</p>
+      <p>Hypothesis generation follows IMRAD structure. Causal analysis uses DoWhy to isolate confounding factors like nutrient availability and oxidative stress.</p>
+      <div class="domain-tags">
+        <span class="dtag">BioGPT</span>
+        <span class="dtag">IMRAD Structure</span>
+        <span class="dtag">DoWhy Causal</span>
+        <span class="dtag">pH / Temperature</span>
+        <span class="dtag">Drug Dosing</span>
+        <span class="dtag">Biomass Yield</span>
+      </div>
+    </div>
+    <div class="domain-info" id="dom-cs">
+      <p>Qwen2.5-Coder-1.5B handles Computer Science queries — from hyperparameter optimization to algorithm analysis, producing structured experimental designs with expected performance tradeoffs.</p>
+      <div class="domain-tags">
+        <span class="dtag">Qwen2.5-Coder</span>
+        <span class="dtag">Hyperparameter Tuning</span>
+        <span class="dtag">Algorithm Analysis</span>
+        <span class="dtag">Benchmark Design</span>
+        <span class="dtag">SHAP Importance</span>
+      </div>
+    </div>
+    <div class="domain-info" id="dom-general">
+      <p>Mistral-Large API serves as the universal fallback for cross-domain and general scientific queries, ensuring no question goes unanswered with a high-quality response.</p>
+      <div class="domain-tags">
+        <span class="dtag">Mistral-Large</span>
+        <span class="dtag">Universal Fallback</span>
+        <span class="dtag">Cross-Domain</span>
+        <span class="dtag">Physics</span>
+        <span class="dtag">Mathematics</span>
+      </div>
+    </div>
+  </div>
+  <div class="domain-visual reveal">
+    <div class="dv-card">
+      <div class="dv-label">Analytics Engine · Bayesian Optimization</div>
+      <div class="dv-graph">
+        <div class="dv-bar" style="height:40%;animation-delay:0.1s"></div>
+        <div class="dv-bar" style="height:65%;animation-delay:0.2s"></div>
+        <div class="dv-bar" style="height:55%;animation-delay:0.3s"></div>
+        <div class="dv-bar" style="height:80%;animation-delay:0.4s"></div>
+        <div class="dv-bar" style="height:70%;background:linear-gradient(to top,#A28B55,#B99470);animation-delay:0.5s"></div>
+        <div class="dv-bar" style="height:95%;background:linear-gradient(to top,#86AB89,#CBE2B5);animation-delay:0.6s"></div>
+        <div class="dv-bar" style="height:85%;animation-delay:0.7s"></div>
+        <div class="dv-bar" style="height:72%;animation-delay:0.8s"></div>
+        <div class="dv-bar" style="height:60%;animation-delay:0.9s"></div>
+        <div class="dv-bar" style="height:45%;animation-delay:1.0s"></div>
+      </div>
+      <div class="dv-params">
+        <div class="dv-param">
+          <span class="dv-param-key">optimal_ph</span>
+          <span class="dv-param-val">7.0 <span class="dv-param-conf">100%</span></span>
+        </div>
+        <div class="dv-param">
+          <span class="dv-param-key">optimal_temp</span>
+          <span class="dv-param-val">30°C <span class="dv-param-conf">100%</span></span>
+        </div>
+        <div class="dv-param">
+          <span class="dv-param-key">best_score</span>
+          <span class="dv-param-val">-0.162</span>
+        </div>
+        <div class="dv-param">
+          <span class="dv-param-key">n_evaluations</span>
+          <span class="dv-param-val">12 iter</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<section id="cta">
+  <div class="section-tag reveal">Start Your Research</div>
+  <h2 class="reveal">Accelerate <em>Discovery</em><br>with Transparent AI</h2>
+  <p class="reveal">Join researchers using IXORA to design better experiments, generate grounded hypotheses, and push the boundaries of scientific knowledge.</p>
+  <div class="cta-actions reveal">
+    <a href="login.html" class="btn-cta">Get Started Free</a>
+    <a href="login.html" class="btn-ghost">Sign In</a>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-logo">IXORA</div>
+  <div class="footer-copy">© 2026 · Multi-Agent Research Intelligence · PID-44</div>
+  <div class="footer-links">
+    <a href="#">Docs</a>
+    <a href="#">API</a>
+    <a href="#">Privacy</a>
+  </div>
+</footer>
+
+<script>
+  // Cursor
+  const cursor = document.getElementById('cursor');
+  const ring = document.getElementById('cursorRing');
+  document.addEventListener('mousemove', e => {
+    cursor.style.left = e.clientX + 'px';
+    cursor.style.top = e.clientY + 'px';
+    setTimeout(() => {
+      ring.style.left = e.clientX + 'px';
+      ring.style.top = e.clientY + 'px';
+    }, 80);
+  });
+  document.querySelectorAll('a, button, .feat-card').forEach(el => {
+    el.addEventListener('mouseenter', () => { cursor.classList.add('hover'); ring.classList.add('hover'); });
+    el.addEventListener('mouseleave', () => { cursor.classList.remove('hover'); ring.classList.remove('hover'); });
+  });
+
+  // Navbar scroll
+  window.addEventListener('scroll', () => {
+    document.getElementById('navbar').classList.toggle('scrolled', window.scrollY > 60);
+  });
+
+  // Reveal on scroll
+  const obs = new IntersectionObserver(entries => {
+    entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
+  }, { threshold: 0.1 });
+  document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
+
+  // Marquee
+  const items = ['Domain-Aware Intelligence','Causal Analysis','Bayesian Optimization','RLHF Pipeline','White-box Tracing','Multi-Agent LangGraph','Parameter Extraction','Literature Search'];
+  const track = document.getElementById('marqueeTrack');
+  [...items,...items,...items,...items].forEach(t => {
+    const d = document.createElement('div');
+    d.className = 'marquee-item';
+    d.innerHTML = `<span class="marquee-dot"></span>${t}`;
+    track.appendChild(d);
+  });
+
+  // Domain tabs
+  function switchDomain(dom, el) {
+    document.querySelectorAll('.dtab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.domain-info').forEach(d => d.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('dom-' + dom).classList.add('active');
+  }
+</script>
+</body>
+</html>

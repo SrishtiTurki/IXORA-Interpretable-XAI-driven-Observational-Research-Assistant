@@ -1,23 +1,57 @@
-# Virtual env
+# ======================
+# Virtual environments
+# ======================
 zora/
 venv/
 
-# Models
+# ======================
+# Environment variables
+# ======================
+.env
+.env.*
+
+# ======================
+# Models / ML artifacts
+# ======================
 models/
 model_cache/
-
-# ML weights
 *.gguf
 *.pth
 *.pt
 *.bin
 *.onnx
 
-# Python junk
+# ======================
+# Python cache
+# ======================
 __pycache__/
-.env
+*.pyc
+*.pyo
 
-
-# Cache + logs
-cache/
+# ======================
+# Logs
+# ======================
+*.log
 logs/
+
+# ======================
+# Redis / databases
+# ======================
+*.rdb
+
+# ======================
+# Node / React
+# ======================
+node_modules/
+dist/
+build/
+
+# ======================
+# Cache folders
+# ======================
+cache/
+
+# ======================
+# Secrets
+# ======================
+client_secret_*.json
