@@ -73,12 +73,12 @@ function DomainCard({ id, cfg, active, onClick }) {
   return (
     <div className="domain-card" style={{ ...css.card, borderColor: active ? 'var(--bark)' : 'var(--border)', boxShadow: active ? '0 0 0 3px rgba(138,118,80,.12),var(--shadow)' : 'none' }} onClick={onClick}>
       <div className="dc-top-bar" style={{ position:'absolute', top:0, left:0, right:0, height:3, borderRadius:'14px 14px 0 0', background:topColor, opacity: active ? 1 : 0, transition:'opacity .25s' }}/>
-      <div style={{ width:40, height:40, borderRadius:10, background:iconBg, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1.1rem', marginBottom:'1rem' }}>
+      <div style={{ width:42, height:42, borderRadius:10, background:iconBg, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1.2rem', marginBottom:'1rem' }}>
         {cfg.emoji}
       </div>
-      <div style={{ fontWeight:700, fontSize:'0.85rem', color:'var(--ink)', marginBottom:'0.4rem' }}>{cfg.label}</div>
-      <div style={{ fontSize:'0.75rem', color:'var(--muted)', lineHeight:1.6, marginBottom:'0.9rem' }}>{cfg.desc}</div>
-      <div style={{ fontFamily:'var(--font-mono)', fontSize:'0.58rem', color:'var(--bark)' }}>{cfg.model}</div>
+      <div style={{ fontWeight:700, fontSize:'0.92rem', color:'var(--ink)', marginBottom:'0.4rem' }}>{cfg.label}</div>
+      <div style={{ fontSize:'0.8rem', color:'var(--muted)', lineHeight:1.6, marginBottom:'0.9rem' }}>{cfg.desc}</div>
+      <div style={{ fontFamily:'var(--font-mono)', fontSize:'0.63rem', color:'var(--bark)' }}>{cfg.model}</div>
     </div>
   )
 }
@@ -86,15 +86,15 @@ function DomainCard({ id, cfg, active, onClick }) {
 const css = {
   page: { flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', padding:'3rem 4rem', overflowY:'auto', position:'relative', background:'var(--parchment-light)' },
   bg: { position:'absolute', inset:0, background:'radial-gradient(ellipse 60% 50% at 60% 30%,rgba(219,206,165,.5) 0%,transparent 60%),radial-gradient(ellipse 40% 40% at 20% 70%,rgba(142,151,125,.1) 0%,transparent 50%)', pointerEvents:'none' },
-  inner: { position:'relative', zIndex:1, maxWidth:740, width:'100%', textAlign:'center' },
-  greeting: { fontFamily:'var(--font-mono)', fontSize:'0.65rem', letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--bark)', marginBottom:'1.2rem', display:'flex', alignItems:'center', justifyContent:'center', gap:'0.6rem', animation:'fadeUp .5s both' },
+  inner: { position:'relative', zIndex:1, maxWidth:780, width:'100%', textAlign:'center' },
+  greeting: { fontFamily:'var(--font-mono)', fontSize:'0.72rem', letterSpacing:'0.18em', textTransform:'uppercase', color:'var(--bark)', marginBottom:'1.2rem', display:'flex', alignItems:'center', justifyContent:'center', gap:'0.6rem', animation:'fadeUp .5s both' },
   greetLine: { display:'block', width:24, height:1, background:'var(--bark)', opacity:0.5 },
-  title: { fontFamily:'var(--font-serif)', fontSize:'clamp(2.2rem,3.8vw,3.4rem)', fontWeight:300, lineHeight:1.1, color:'var(--ink)', marginBottom:'1rem', animation:'fadeUp .6s .08s both' },
+  title: { fontFamily:'var(--font-serif)', fontSize:'clamp(2.4rem,4vw,3.6rem)', fontWeight:300, lineHeight:1.1, color:'var(--ink)', marginBottom:'1rem', animation:'fadeUp .6s .08s both' },
   em: { fontStyle:'italic', color:'var(--bark)' },
-  sub: { fontSize:'0.88rem', color:'var(--muted)', lineHeight:1.8, marginBottom:'2.5rem', maxWidth:480, marginLeft:'auto', marginRight:'auto', animation:'fadeUp .6s .15s both' },
+  sub: { fontSize:'0.96rem', color:'var(--muted)', lineHeight:1.8, marginBottom:'2.5rem', maxWidth:500, marginLeft:'auto', marginRight:'auto', animation:'fadeUp .6s .15s both' },
   cards: { display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'1rem', marginBottom:'2.5rem', animation:'fadeUp .6s .22s both' },
-  card: { background:'white', border:'1px solid var(--border)', borderRadius:14, padding:'1.4rem 1.2rem', cursor:'none', transition:'all .25s', textAlign:'left', position:'relative', overflow:'hidden' },
-  sugLabel: { fontFamily:'var(--font-mono)', fontSize:'0.6rem', letterSpacing:'0.15em', textTransform:'uppercase', color:'var(--muted)', marginBottom:'0.75rem', animation:'fadeUp .6s .28s both' },
+  card: { background:'white', border:'1px solid var(--border)', borderRadius:14, padding:'1.5rem 1.3rem', cursor:'none', transition:'all .25s', textAlign:'left', position:'relative', overflow:'hidden' },
+  sugLabel: { fontFamily:'var(--font-mono)', fontSize:'0.67rem', letterSpacing:'0.15em', textTransform:'uppercase', color:'var(--muted)', marginBottom:'0.75rem', animation:'fadeUp .6s .28s both' },
   chips: { display:'flex', flexWrap:'wrap', gap:'0.5rem', justifyContent:'center', animation:'fadeUp .6s .34s both' },
-  chip: { background:'white', border:'1px solid var(--border)', borderRadius:20, padding:'0.45rem 1rem', fontSize:'0.75rem', color:'var(--ink-mid)', cursor:'none', transition:'all .2s', fontFamily:'var(--font-sans)' },
+  chip: { background:'white', border:'1px solid var(--border)', borderRadius:20, padding:'0.5rem 1.1rem', fontSize:'0.82rem', color:'var(--ink-mid)', cursor:'none', transition:'all .2s', fontFamily:'var(--font-sans)' },
 }

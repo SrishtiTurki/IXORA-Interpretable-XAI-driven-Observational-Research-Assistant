@@ -21,23 +21,29 @@ load_dotenv()
 # ─── Config ────────────────────────────────────────────────────────────────
 MONGODB_URI      = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
 MONGODB_DB_NAME  = os.getenv("MONGODB_DB_NAME", "ixora")
-JWT_SECRET       = os.getenv("JWT_SECRET", " ")
+JWT_SECRET       = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM    = "HS256"
 JWT_EXPIRE_HOURS = 24 * 7   # 7 days
 
-GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", " ")
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", " ")
+GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:3000/auth/callback")
 
 # ─── App Setup ──────────────────────────────────────────────────────────────
 app = FastAPI(title="IXORA Auth API", version="1.0.0")
 
+# Replace or update your existing middleware block with this:
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[
+        "http://localhost:3000",       # your React dev server
+        "http://127.0.0.1:3000",       # sometimes browsers use 127.0.0.1
+        "http://localhost:5173",       # if using Vite default port sometimes
+        # add "https://your-production-domain.com" later
+    ],
+    allow_credentials=True,            # needed if you ever send cookies/auth headers
+    allow_methods=["*"],               # GET, POST, OPTIONS, etc.
+    allow_headers=["*"],               # Content-Type, Authorization, etc.
 )
 
 # ─── DB & Security ──────────────────────────────────────────────────────────

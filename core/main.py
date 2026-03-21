@@ -3,7 +3,6 @@
 # 1. Causal analysis REMOVED from main flow (button-only via /causal endpoint)
 # 2. Bayesian optimization moved to BACKGROUND (displays when ready)
 # 3. Tighter parameter extraction with timeout
-
 from fastapi import FastAPI, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from core.intent_router import classify_conversation_intent, is_out_of_domain, get_out_of_domain_message
@@ -79,7 +78,7 @@ logger = logging.getLogger("biomed")
 
 app = FastAPI(title="IXORA - Multi-Agent Research Assistant (Optimized)")
 
-# Mount frontend static files
+# Mount frontend static files (single mount)
 app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 
 # CORS
@@ -91,8 +90,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount frontend static files
-app.mount("/static", StaticFiles(directory="frontend/static"), name="static")
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_home():
@@ -175,6 +172,116 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         return user
     except:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+# ========== AUTH ROUTES ==========
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class RegisterRequest(BaseModel):
+    first_name: str
+    last_name: str
+    email: str
+    password: str
+
+class GoogleAuthRequest(BaseModel):
+    code: str
+
+@app.post("/api/auth/login")
+async def auth_login(req: LoginRequest):
+    user = users.find_one({"email": req.email.lower().strip()})
+    if not user or not pwd_context.verify(req.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail={"message": "Invalid email or password"})
+    token = create_token(str(user["_id"]), user["email"])
+    return {
+        "token": token,
+        "user": {
+            "id": str(user["_id"]),
+            "email": user["email"],
+            "first_name": user.get("first_name", ""),
+            "last_name": user.get("last_name", ""),
+            "provider": user.get("provider", "email"),
+        }
+    }
+
+@app.post("/api/auth/register")
+async def auth_register(req: RegisterRequest):
+    if users.find_one({"email": req.email.lower().strip()}):
+        raise HTTPException(status_code=400, detail={"message": "Email already registered"})
+    if len(req.password) < 8:
+        raise HTTPException(status_code=400, detail={"message": "Password must be at least 8 characters"})
+    user_id = str(uuid.uuid4())
+    user_doc = {
+        "_id": user_id,
+        "email": req.email.lower().strip(),
+        "first_name": req.first_name.strip(),
+        "last_name": req.last_name.strip(),
+        "password_hash": pwd_context.hash(req.password),
+        "provider": "email",
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    users.insert_one(user_doc)
+    token = create_token(user_id, user_doc["email"])
+    return {
+        "token": token,
+        "user": {
+            "id": user_id,
+            "email": user_doc["email"],
+            "first_name": user_doc["first_name"],
+            "last_name": user_doc["last_name"],
+            "provider": "email",
+        }
+    }
+
+@app.post("/api/auth/google")
+async def auth_google(req: GoogleAuthRequest):
+    async with httpx.AsyncClient() as client_http:
+        # Exchange code for tokens
+        token_res = await client_http.post("https://oauth2.googleapis.com/token", data={
+            "code": req.code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": "http://localhost:3000/auth/callback",
+            "grant_type": "authorization_code",
+        })
+        if token_res.status_code != 200:
+            raise HTTPException(status_code=400, detail={"message": "Google token exchange failed"})
+        tokens = token_res.json()
+        # Get user info
+        info_res = await client_http.get("https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {tokens['access_token']}"})
+        if info_res.status_code != 200:
+            raise HTTPException(status_code=400, detail={"message": "Could not fetch Google user info"})
+        guser = info_res.json()
+        email = guser.get("email", "").lower().strip()
+        existing = users.find_one({"email": email})
+        if existing:
+            user_id = str(existing["_id"])
+        else:
+            user_id = str(uuid.uuid4())
+            users.insert_one({
+                "_id": user_id,
+                "email": email,
+                "first_name": guser.get("given_name", ""),
+                "last_name": guser.get("family_name", ""),
+                "password_hash": "",
+                "provider": "google",
+                "created_at": datetime.utcnow().isoformat(),
+            })
+            existing = users.find_one({"_id": user_id})
+        token = create_token(user_id, email)
+        return {
+            "token": token,
+            "user": {
+                "id": user_id,
+                "email": email,
+                "first_name": existing.get("first_name", ""),
+                "last_name": existing.get("last_name", ""),
+                "provider": "google",
+            }
+        }
+
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)

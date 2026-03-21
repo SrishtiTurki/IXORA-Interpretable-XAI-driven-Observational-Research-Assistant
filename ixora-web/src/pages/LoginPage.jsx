@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { toast } from '../components/Toast'
@@ -87,7 +87,9 @@ export default function LoginPage() {
   // Forgot
   const [forgotEmail, setForgotEmail] = useState('')
 
-  if (isAuthed) { navigate('/'); return null }
+  useEffect(() => {
+    if (isAuthed) navigate('/', { replace: true })
+  }, [isAuthed, navigate])
 
   const handleLogin = async () => {
     const errs = {}

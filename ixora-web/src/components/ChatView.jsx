@@ -1,7 +1,9 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useChat } from '../context/ChatContext'
 import { toast } from './Toast'
+
+const API = 'http://localhost:8000'
 
 const DOMAIN_CFG = {
   bio: { label:'Biomedical',    model:'BioGPT',        color:'#6B8F71' },
@@ -9,148 +11,335 @@ const DOMAIN_CFG = {
   gen: { label:'General',       model:'Mistral-Large', color:'#8E977D' },
 }
 
-const DEMO_PAPERS = [
-  { id:'p1', title:'CRISPR-Cas9 Mechanism in Mammalian Genome Editing', authors:'Zhang et al. · 2024 · Nature Biotech', url:'' },
-  { id:'p2', title:'Bayesian Optimization Strategies for Accelerated Drug Discovery', authors:'Liu & Park · 2024 · Cell Systems', url:'' },
-  { id:'p3', title:'Causal Inference Methods for Observational Clinical Trial Data', authors:'Hernán et al. · 2023 · NEJM', url:'' },
-  { id:'p4', title:'Attention Is All You Need: Revisited for Scientific Language Models', authors:'Vaswani et al. · 2023 · arXiv', url:'' },
-]
+const DOMAIN_MAP = { bio:'biomed', cs:'cs', gen:'general' }
 
-const AI_RESPONSES = {
-  bio: [
-    `Based on the **IMRAD framework**, here is my structured analysis:\n\n**Introduction:** Your query touches a well-studied area with several open questions. The causal mechanism involves multiple confounding variables requiring careful isolation.\n\n**Recommended Methods:** DoWhy-based causal analysis + Bayesian optimization of key parameters (pH: 7.0, temp: 37°C, nutrient concentration).\n\n**Hypothesis (BioGPT):** The proposed mechanism is consistent with oxidative stress pathways documented in 12 peer-reviewed sources.\n\nConfidence: 91% across retrieved literature.`,
-    `Excellent research question. Let me trace my reasoning:\n\n**Step 1 — Parameter extraction** identified 3 key experimental variables\n**Step 2 — Literature retrieval** pulled 7 relevant papers from PubMed and bioRxiv\n**Step 3 — BioGPT hypothesis generation** with SHAP feature importance scores\n\nThe evidence strongly suggests a significant correlation (p < 0.001). I recommend a controlled trial with n ≥ 30 to confirm causal direction.`,
-  ],
-  cs: [
-    `**Architecture comparison complete.** After benchmarking across 3 datasets:\n\nThe transformer with sparse attention achieves **23% lower latency** at comparable accuracy.\n\n**Bayesian-optimized hyperparameters:**\n- Learning rate: 3e-4\n- Batch size: 128\n- Warmup steps: 1000\n- Weight decay: 0.01\n\nSHAP analysis identifies attention head count as most impactful (importance score: 0.43). Full benchmark results surfaced in arXiv panel.`,
-    `Code analysis complete.\n\n**Complexity:** O(n log n) average, O(n²) worst case\n**Memory footprint:** O(n) auxiliary space\n**Bottleneck identified:** Inner loop — consider memoization to reduce redundant computations\n\nI also found 2 edge cases your current implementation doesn't handle. Would you like me to generate unit tests covering those paths?`,
-  ],
-  gen: [
-    `Great question spanning multiple fields. Here's a cross-domain synthesis:\n\nCurrent scientific consensus (2024) supports three competing explanatory frameworks, each with strong empirical backing. Recent work by Park et al. (2024) reconciles these using a unified **information-theoretic model** — I've surfaced this paper in the panel.\n\nKey insight: the apparent contradiction between Framework A and B dissolves when you account for measurement scale differences. Would you like me to dig into any specific framework?`,
-  ],
-}
+// ─── right-panel tabs ────────────────────────────────────────────────────────
+const PANEL_TABS = ['papers', 'trace', 'causal', 'optimization']
 
 export default function ChatView({ chatId, domain, onBack }) {
-  const { user } = useAuth()
+  const { user, authFetch } = useAuth()
   const { history, appendMessage, updateChat, toggleBookmark } = useChat()
 
-  const chat = history.find(c => c.id === chatId)
-  const [messages, setMessages] = useState(chat?.msgs || [])
-  const [input, setInput]       = useState('')
-  const [loading, setLoading]   = useState(false)
-  const [pdfOpen, setPdfOpen]   = useState(false)
-  const [activePaper, setActivePaper] = useState(null)
-  const [chatTitle, setChatTitle]     = useState(chat?.title || '')
-  const scrollRef = useRef(null)
-  const inputRef  = useRef(null)
-  const cfg = DOMAIN_CFG[domain] || DOMAIN_CFG.gen
-  const initials = user ? (user.first_name?.[0] || '') + (user.last_name?.[0] || '') : 'U'
+  const chat       = history.find(c => c.id === chatId)
+  const cfg        = DOMAIN_CFG[domain] || DOMAIN_CFG.gen
+  const initials   = user ? (user.first_name?.[0]||'')+(user.last_name?.[0]||'') : 'U'
   const bookmarked = chat?.bookmarked || false
 
-  // Seed greeting if new chat
+  const [messages,    setMessages]    = useState(chat?.msgs || [])
+  const [input,       setInput]       = useState('')
+  const [loading,     setLoading]     = useState(false)
+  const [chatTitle,   setChatTitle]   = useState(chat?.title || '')
+
+  // Right panel
+  const [panelTab,    setPanelTab]    = useState(null)          // null = closed
+  const [papers,      setPapers]      = useState([])
+  const [papersLoading, setPapersLoading] = useState(false)
+  const [activePaper, setActivePaper] = useState(null)
+
+  // Per-message meta (trace, params, methods, validation, confidence)
+  // Stored as { [msgId]: {...} }
+  const [msgMeta,  setMsgMeta]  = useState({})
+
+  // Causal analysis
+  const [causalData,    setCausalData]    = useState(null)
+  const [causalLoading, setCausalLoading] = useState(false)
+
+  // Bayesian optimisation
+  const [optData,    setOptData]    = useState(null)
+  const [optPolling, setOptPolling] = useState(false)
+
+  // Feedback state  { [msgId]: 'good'|'bad' }
+  const [feedback, setFeedback] = useState({})
+
+  const sessionIdRef = useRef(chatId)
+  const scrollRef    = useRef(null)
+  const inputRef     = useRef(null)
+  const pollTimer    = useRef(null)
+
+  // ── Greeting ────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!chat?.msgs?.length && messages.length === 0) {
-      const greeting = {
-        id: Date.now(),
-        role: 'ai',
-        text: `Hello! I'm IXORA's **${cfg.label}** specialist, powered by ${cfg.model}. Ask me anything — experimental design, literature review, hypothesis generation. Every reasoning step is traced and open to your inspection.`,
-        sources: [],
-      }
-      setMessages([greeting])
+      setMessages([{
+        id: Date.now(), role:'ai',
+        text: `Hello! I'm IXORA's **${cfg.label}** specialist, powered by ${cfg.model}.\n\nAsk me anything — experimental design, literature review, hypothesis generation. Every reasoning step is traced and visible in the panel.`,
+        sources:[],
+      }])
     }
   }, [chatId])
 
+  // ── Pending prompt from suggestion chips ───────────────────────────────────
+  useEffect(() => {
+    const pending = sessionStorage.getItem('ixora_pending_prompt')
+    if (pending) {
+      sessionStorage.removeItem('ixora_pending_prompt')
+      setTimeout(() => sendMessageWithText(pending), 120)
+    }
+  }, [chatId])
+
+  // ── Auto-scroll ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight
   }, [messages, loading])
 
-  const sendMessage = async () => {
-    if (!input.trim() || loading) return
-    const text = input.trim()
+  // ── Cleanup polling on unmount ───────────────────────────────────────────────
+  useEffect(() => () => clearInterval(pollTimer.current), [])
+
+  // ── Send message ─────────────────────────────────────────────────────────────
+  const sendMessageWithText = async (text) => {
+    if (!text.trim() || loading) return
     setInput('')
-    inputRef.current.style.height = 'auto'
+    if (inputRef.current) inputRef.current.style.height = 'auto'
 
-    const userMsg = { id: Date.now(), role: 'user', text }
+    const userMsg = { id: Date.now(), role:'user', text }
     setMessages(prev => [...prev, userMsg])
-
-    // Update title if first real message
-    if (!chatTitle) {
-      const title = text.slice(0, 50)
-      setChatTitle(title)
-      updateChat(chatId, { title })
-    }
-
+    if (!chatTitle) { const t = text.slice(0,50); setChatTitle(t); updateChat(chatId,{title:t}) }
     appendMessage(chatId, userMsg)
     setLoading(true)
 
-    await new Promise(r => setTimeout(r, 1000 + Math.random() * 800))
+    try {
+      const res = await authFetch('/chat', {
+        method:'POST',
+        body: JSON.stringify({
+          message:    text,
+          session_id: sessionIdRef.current,
+          domain:     DOMAIN_MAP[domain] || 'biomed',
+        }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(()=>({}))
+        throw new Error(err.detail?.message || err.detail || `Server error ${res.status}`)
+      }
+      const data = await res.json()
 
-    const pool = AI_RESPONSES[domain] || AI_RESPONSES.gen
-    const aiText = pool[Math.floor(Math.random() * pool.length)]
-    const sources = domain === 'bio'
-      ? ['PubMed · 2024', 'bioRxiv · 2024', 'Nature · 2023']
-      : domain === 'cs'
-      ? ['arXiv · 2024', 'NeurIPS · 2023', 'ICML · 2024']
-      : ['arXiv · 2024', 'Science · 2024']
+      const aiMsgId = Date.now() + 1
+      const sources = (data.papers||[]).map(p=>p.title||'Source').filter(Boolean)
 
-    const aiMsg = { id: Date.now() + 1, role: 'ai', text: aiText, sources, confidence: 88 + Math.floor(Math.random() * 8) }
-    setMessages(prev => [...prev, aiMsg])
-    appendMessage(chatId, aiMsg)
-    setLoading(false)
+      const aiMsg = {
+        id: aiMsgId, role:'ai',
+        text: data.response || 'No response received.',
+        sources,
+        confidence: data.confidence != null ? Math.round(data.confidence * 100) : undefined,
+        sessionId: data.session_id,
+        queryHash: data.query_hash,
+        usedPipeline: data.used_full_pipeline,
+      }
+      setMessages(prev => [...prev, aiMsg])
+      appendMessage(chatId, aiMsg)
+
+      // Store rich meta for this message
+      setMsgMeta(prev => ({
+        ...prev,
+        [aiMsgId]: {
+          trace:        data.trace        || [],
+          parameters:   data.parameters   || {},
+          intent:       data.intent,
+          domain:       data.domain,
+          processingTime: data.processing_time_seconds,
+          rewardScore:  data.reward_score,
+          usedPipeline: data.used_full_pipeline,
+          optimizationNote: data.optimization_note,
+        }
+      }))
+
+      // Update session ref so subsequent calls use same session
+      sessionIdRef.current = data.session_id || sessionIdRef.current
+
+      // Auto-start polling optimization if backend launched it
+      if (data.optimization_note) startOptimizationPolling(data.session_id)
+
+      // Auto-fetch arXiv papers for this query
+      fetchPapers(text)
+
+    } catch(e) {
+      console.error('Chat error:', e)
+      toast(e.message || 'Failed to reach backend', 'error')
+      setMessages(prev => [...prev, {
+        id: Date.now()+1, role:'ai',
+        text:`⚠️ **Backend error:** ${e.message}\n\nMake sure the server is running at \`${API}\`.`,
+        sources:[],
+      }])
+    } finally {
+      setLoading(false)
+    }
   }
 
-  const handleKey = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
+  const sendMessage = () => sendMessageWithText(input.trim())
+  const handleKey = (e) => { if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendMessage()} }
+  const autoResize = (el) => { el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,120)+'px' }
+
+  // ── arXiv papers ─────────────────────────────────────────────────────────────
+  const fetchPapers = async (query) => {
+    setPapersLoading(true)
+    try {
+      const res = await fetch(`${API}/arxiv`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ query }),
+      })
+      const data = await res.json()
+      setPapers(data.links || [])
+    } catch(e) {
+      console.warn('arXiv fetch failed:', e)
+    } finally {
+      setPapersLoading(false)
+    }
   }
 
-  const autoResize = (el) => {
-    el.style.height = 'auto'
-    el.style.height = Math.min(el.scrollHeight, 120) + 'px'
+  // ── Causal analysis ──────────────────────────────────────────────────────────
+  const runCausalAnalysis = async () => {
+    setCausalLoading(true)
+    setCausalData(null)
+    setPanelTab('causal')
+    const lastAiMsg = [...messages].reverse().find(m=>m.role==='ai')
+    const query = lastAiMsg?.text?.slice(0,200) || 'research query'
+    try {
+      const res = await fetch(`${API}/causal`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          query,
+          session_id: sessionIdRef.current,
+          include_links: true,
+          domain: DOMAIN_MAP[domain] || 'biomed',
+        }),
+      })
+      const data = await res.json()
+      if (data.status === 'error' || data.status === 'timeout') {
+        toast(data.error || 'Causal analysis failed', 'error')
+        setCausalData({ error: data.error })
+      } else {
+        setCausalData(data)
+        toast('Causal analysis complete ✓', 'success')
+      }
+    } catch(e) {
+      toast('Causal analysis failed', 'error')
+      setCausalData({ error: e.message })
+    } finally {
+      setCausalLoading(false)
+    }
   }
+
+  // ── Bayesian optimisation polling ────────────────────────────────────────────
+  const startOptimizationPolling = (sid) => {
+    clearInterval(pollTimer.current)
+    setOptPolling(true)
+    setOptData(null)
+    let attempts = 0
+    pollTimer.current = setInterval(async () => {
+      attempts++
+      try {
+        const res = await fetch(`${API}/optimization/${sid}`)
+        const data = await res.json()
+        if (data.status === 'completed' || data.status === 'failed' || data.status === 'timeout') {
+          setOptData(data)
+          setOptPolling(false)
+          clearInterval(pollTimer.current)
+          toast(`Optimisation ${data.status} ✓`, data.status==='completed' ? 'success' : 'error')
+        } else if (attempts >= 20) {
+          setOptPolling(false)
+          clearInterval(pollTimer.current)
+        }
+      } catch(e) {
+        if (attempts >= 20) { setOptPolling(false); clearInterval(pollTimer.current) }
+      }
+    }, 3000)
+  }
+
+  const manualOptimizationCheck = async () => {
+    setPanelTab('optimization')
+    setOptPolling(true)
+    try {
+      const res = await fetch(`${API}/optimization/${sessionIdRef.current}`)
+      const data = await res.json()
+      setOptData(data)
+      if (data.status === 'running' || data.status === 'not_started') startOptimizationPolling(sessionIdRef.current)
+    } catch(e) { toast('Could not fetch optimisation status', 'error') }
+    finally { setOptPolling(false) }
+  }
+
+  // ── Feedback ─────────────────────────────────────────────────────────────────
+  const sendFeedback = async (msgId, pref) => {
+    const msg = messages.find(m=>m.id===msgId)
+    if (!msg) return
+    setFeedback(prev=>({...prev,[msgId]:pref}))
+    try {
+      await fetch(`${API}/feedback`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          session_id: msg.sessionId || sessionIdRef.current,
+          preference: pref,
+          response: msg.text,
+          query_hash: msg.queryHash || 'unknown',
+        }),
+      })
+      toast(pref==='good' ? '👍 Feedback recorded' : '👎 Feedback recorded')
+    } catch(e) { console.warn('Feedback failed:', e) }
+  }
+
+  // ── Trace lookup: last message that has trace data ───────────────────────────
+  const lastMetaEntry = Object.values(msgMeta).filter(m=>m.trace?.length>0).slice(-1)[0] || null
+
+  // ── Panel open/close ─────────────────────────────────────────────────────────
+  const togglePanel = (tab) => setPanelTab(prev => prev===tab ? null : tab)
 
   const exportChat = () => {
     if (!messages.length) { toast('Nothing to export yet'); return }
-    const text = messages.map(m => `[${m.role.toUpperCase()}]\n${m.text}`).join('\n\n---\n\n')
-    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([text], {type:'text/plain'})), download: `${chatTitle || 'ixora-chat'}.txt` })
-    a.click()
-    toast('Exported as .txt')
+    const text = messages.map(m=>`[${m.role.toUpperCase()}]\n${m.text}`).join('\n\n---\n\n')
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([text],{type:'text/plain'})), download:`${chatTitle||'ixora-chat'}.txt` })
+    a.click(); toast('Exported as .txt')
   }
 
-  const handleBookmark = () => {
-    toggleBookmark(chatId)
-    toast(bookmarked ? 'Bookmark removed' : '★ Chat bookmarked')
-  }
+  const handleBookmark = () => { toggleBookmark(chatId); toast(bookmarked?'Bookmark removed':'★ Chat bookmarked') }
+
+  const panelOpen = panelTab !== null
 
   return (
     <div style={css.wrap}>
-      {/* Topbar */}
+      {/* ── Topbar ── */}
       <div style={css.topbar}>
-        <button style={css.backBtn} onClick={onBack}>← Back</button>
+        <button style={css.backBtn} className="tb-btn" onClick={onBack}>← Back</button>
         <div style={css.domainBadge}>
-          <span style={{ width:6, height:6, borderRadius:'50%', background:cfg.color, display:'block' }}/>
+          <span style={{width:6,height:6,borderRadius:'50%',background:cfg.color,display:'block'}}/>
           {cfg.label}
         </div>
         <input
           style={css.titleInput}
           value={chatTitle}
-          onChange={e => { setChatTitle(e.target.value); updateChat(chatId, { title: e.target.value }) }}
+          onChange={e=>{setChatTitle(e.target.value);updateChat(chatId,{title:e.target.value})}}
           placeholder="Untitled conversation…"
         />
         <div style={css.topbarActions}>
-          <button style={css.topBtn(pdfOpen)} onClick={() => setPdfOpen(v => !v)}>📄 Papers</button>
-          <button style={css.topBtn(bookmarked)} onClick={handleBookmark}>{bookmarked ? '★' : '☆'} Bookmark</button>
-          <button style={css.topBtn(false)} onClick={exportChat}>↓ Export</button>
+          <button style={css.topBtn(panelTab==='papers')}       onClick={()=>togglePanel('papers')}>📄 Papers {papers.length>0&&`(${papers.length})`}</button>
+          <button style={css.topBtn(panelTab==='trace')}        onClick={()=>togglePanel('trace')}>🔍 Trace {lastMetaEntry&&`(${lastMetaEntry.trace.length})`}</button>
+          <button style={css.topBtn(panelTab==='causal')}       onClick={()=>{runCausalAnalysis()}}>🔬 Causal</button>
+          <button style={css.topBtn(panelTab==='optimization')} onClick={manualOptimizationCheck}>
+            {optPolling ? '⏳ Optimising…' : '⚙️ Optimisation'}
+          </button>
+          <button style={css.topBtn(bookmarked)} onClick={handleBookmark}>{bookmarked?'★':'☆'}</button>
+          <button style={css.topBtn(false)} onClick={exportChat}>↓</button>
         </div>
       </div>
 
-      {/* Body */}
+      {/* ── Body ── */}
       <div style={css.body}>
-        {/* Messages */}
+
+        {/* Messages pane */}
         <div style={css.messagesPane}>
           <div style={css.messagesScroll} ref={scrollRef}>
-            <div style={css.divider}>Start of conversation</div>
+            <div style={css.divider}><span style={css.divLine}/><span>Start of conversation</span><span style={css.divLine}/></div>
+
             {messages.map(msg => (
-              <Message key={msg.id} msg={msg} initials={initials} modelName={cfg.model} />
+              <Message
+                key={msg.id}
+                msg={msg}
+                initials={initials}
+                modelName={cfg.model}
+                meta={msgMeta[msg.id]}
+                feedbackState={feedback[msg.id]}
+                onFeedback={(pref)=>sendFeedback(msg.id,pref)}
+                onShowTrace={()=>{ setPanelTab('trace') }}
+              />
             ))}
             {loading && <TypingIndicator />}
           </div>
@@ -163,87 +352,201 @@ export default function ChatView({ chatId, domain, onBack }) {
                 style={css.textarea}
                 placeholder={`Ask IXORA (${cfg.label})…`}
                 value={input}
-                onChange={e => { setInput(e.target.value); autoResize(e.target) }}
+                onChange={e=>{setInput(e.target.value);autoResize(e.target)}}
                 onKeyDown={handleKey}
                 rows={1}
               />
-              <div style={{ display:'flex', alignItems:'center', gap:'0.4rem', flexShrink:0 }}>
-                <button style={css.attachBtn} onClick={() => toast('File attachment coming soon')}>📎</button>
-                <button style={css.sendBtn} onClick={sendMessage} disabled={loading || !input.trim()}>→</button>
+              <div style={{display:'flex',alignItems:'center',gap:'0.4rem',flexShrink:0}}>
+                <button style={css.sendBtn} onClick={sendMessage} disabled={loading||!input.trim()}>→</button>
               </div>
             </div>
             <div style={css.inputFooter}>
               <span>↵ send · shift+↵ newline</span>
-              <button style={css.arxivBtn} onClick={() => setPdfOpen(v => !v)}>📄 arXiv papers</button>
+              {lastMetaEntry && (
+                <span style={{color:'var(--bark)'}}>
+                  ⏱ {lastMetaEntry.processingTime}s ·{' '}
+                  {lastMetaEntry.intent && <span>{lastMetaEntry.intent}</span>}
+                  {lastMetaEntry.usedPipeline && <span> · full pipeline</span>}
+                </span>
+              )}
             </div>
           </div>
         </div>
 
-        {/* PDF Panel */}
-        <div style={{ ...css.pdfPanel, width: pdfOpen ? '44%' : 0 }}>
-          {pdfOpen && (
-            activePaper
-              ? <PdfEmbed paper={activePaper} onBack={() => setActivePaper(null)} onClose={() => { setPdfOpen(false); setActivePaper(null) }} />
-              : <PapersList papers={DEMO_PAPERS} onSelect={p => setActivePaper(p)} onClose={() => setPdfOpen(false)} />
+        {/* Right panel */}
+        <div style={{...css.panel, width: panelOpen ? (panelTab==='papers' && activePaper ? 680 : 440) : 0}}>
+          {panelOpen && (
+            <div style={css.panelInner}>
+
+              {/* Panel tab bar */}
+              <div style={css.panelTabBar}>
+                {PANEL_TABS.map(t => (
+                  <button key={t} style={css.panelTabBtn(panelTab===t)} onClick={()=>setPanelTab(t)}>
+                    { t==='papers'       ? '📄 Papers'
+                    : t==='trace'        ? '🔍 Trace'
+                    : t==='causal'       ? '🔬 Causal'
+                    :                     '⚙️ Optim.' }
+                  </button>
+                ))}
+                <button style={css.panelClose} onClick={()=>setPanelTab(null)}>✕</button>
+              </div>
+
+              <div style={css.panelScroll}>
+                {/* ── PAPERS TAB ── */}
+                {panelTab==='papers' && (
+                  <PapersPanel
+                    papers={papers}
+                    loading={papersLoading}
+                    activePaper={activePaper}
+                    onSelect={setActivePaper}
+                    onBack={()=>setActivePaper(null)}
+                  />
+                )}
+
+                {/* ── TRACE TAB ── */}
+                {panelTab==='trace' && (
+                  <TracePanel meta={lastMetaEntry} />
+                )}
+
+                {/* ── CAUSAL TAB ── */}
+                {panelTab==='causal' && (
+                  <CausalPanel data={causalData} loading={causalLoading} />
+                )}
+
+                {/* ── OPTIMISATION TAB ── */}
+                {panelTab==='optimization' && (
+                  <OptimizationPanel data={optData} polling={optPolling} />
+                )}
+              </div>
+            </div>
           )}
         </div>
       </div>
 
       <style>{`
         .input-wrap:focus-within{border-color:var(--bark)!important;box-shadow:0 0 0 3px rgba(138,118,80,.1)!important;}
-        .back-btn:hover{background:var(--border)!important;color:var(--ink)!important;}
+        .tb-btn:hover{background:var(--border)!important;color:var(--ink)!important;}
+        @keyframes msgIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes typingBounce{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        @keyframes pulse2{0%,100%{opacity:.4}50%{opacity:1}}
       `}</style>
     </div>
   )
 }
 
-function Message({ msg, initials, modelName }) {
-  const isUser = msg.role === 'user'
-  const formatted = (msg.text || '')
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\n/g, '<br/>')
+// ─── Message ─────────────────────────────────────────────────────────────────
+function Message({ msg, initials, modelName, meta, feedbackState, onFeedback, onShowTrace }) {
+  const isUser = msg.role==='user'
+  const [showMeta, setShowMeta] = useState(false)
+  const formatted = (msg.text||'')
+    .replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\n/g,'<br/>')
 
   return (
-    <div style={{ ...css.msg, flexDirection: isUser ? 'row-reverse' : 'row' }}>
-      <div style={{ ...css.avatar, background: isUser ? 'linear-gradient(135deg,var(--bark),var(--sage))' : 'var(--parchment)', border: isUser ? 'none' : '1px solid var(--border)', color: isUser ? 'var(--parchment-light)' : 'var(--bark)' }}>
+    <div style={{...css.msg, flexDirection:isUser?'row-reverse':'row'}}>
+      <div style={{...css.avatar,
+        background: isUser ? 'linear-gradient(135deg,var(--bark),var(--sage))' : 'var(--parchment)',
+        border: isUser ? 'none' : '1px solid var(--border)',
+        color: isUser ? 'var(--parchment-light)' : 'var(--bark)',
+      }}>
         {isUser ? initials.toUpperCase() : 'IX'}
       </div>
-      <div>
-        <div style={{ ...css.bubble, background: isUser ? 'var(--bark-deeper)' : 'white', color: isUser ? 'var(--parchment-light)' : 'var(--ink)', border: isUser ? 'none' : '1px solid var(--border)', borderBottomRightRadius: isUser ? 4 : 14, borderBottomLeftRadius: isUser ? 14 : 4 }}>
-          <span dangerouslySetInnerHTML={{ __html: formatted }} />
-          {msg.sources?.length > 0 && (
+      <div style={{maxWidth:'72%'}}>
+        <div style={{...css.bubble,
+          background: isUser ? 'var(--bark-deeper)' : 'white',
+          color: isUser ? 'var(--parchment-light)' : 'var(--ink)',
+          border: isUser ? 'none' : '1px solid var(--border)',
+          borderBottomRightRadius: isUser ? 4 : 14,
+          borderBottomLeftRadius:  isUser ? 14 : 4,
+        }}>
+          <span dangerouslySetInnerHTML={{__html:formatted}}/>
+
+          {/* Sources */}
+          {msg.sources?.length>0 && (
             <div style={css.sources}>
-              {msg.sources.map((s, i) => (
-                <span key={i} style={css.sourceChip}>📄 {s}</span>
-              ))}
+              {msg.sources.map((s,i)=><span key={i} style={css.sourceChip}>📄 {s}</span>)}
             </div>
           )}
-          {msg.confidence && !isUser && (
+
+          {/* Confidence bar */}
+          {msg.confidence!=null && !isUser && (
             <div style={css.confBar}>
               <span>Confidence</span>
-              <div style={{ flex:1, height:3, background:'var(--border)', borderRadius:2, overflow:'hidden' }}>
-                <div style={{ height:'100%', width:`${msg.confidence}%`, background:'linear-gradient(90deg,var(--sage),var(--bark))', borderRadius:2 }}/>
+              <div style={{flex:1,height:3,background:'var(--border)',borderRadius:2,overflow:'hidden'}}>
+                <div style={{height:'100%',width:`${msg.confidence}%`,background:'linear-gradient(90deg,var(--sage),var(--bark))',borderRadius:2}}/>
               </div>
               <span>{msg.confidence}%</span>
             </div>
           )}
         </div>
-        <div style={{ ...css.msgMeta, justifyContent: isUser ? 'flex-end' : 'flex-start' }}>
-          {isUser ? 'You' : `IXORA · ${modelName}`} · {new Date().toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' })}
+
+        {/* Message footer */}
+        <div style={{...css.msgMeta, justifyContent:isUser?'flex-end':'flex-start'}}>
+          <span>{isUser?'You':`IXORA · ${modelName}`} · {new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>
+
+          {!isUser && meta && (
+            <>
+              {meta.intent && <Tag>{meta.intent}</Tag>}
+              {meta.usedPipeline && <Tag green>pipeline</Tag>}
+              {meta.processingTime && <span style={{opacity:.6}}>{meta.processingTime}s</span>}
+              {meta.trace?.length>0 && (
+                <button style={css.metaBtn} onClick={()=>{setShowMeta(v=>!v);onShowTrace()}}>
+                  {showMeta?'hide trace':'show trace ↗'}
+                </button>
+              )}
+            </>
+          )}
+
+          {/* Feedback */}
+          {!isUser && (
+            <div style={{display:'flex',gap:3,marginLeft:'auto'}}>
+              <button style={{...css.fbBtn, color: feedbackState==='good'?'var(--sage)':undefined}} onClick={()=>onFeedback('good')}>👍</button>
+              <button style={{...css.fbBtn, color: feedbackState==='bad' ?'#B5614A':undefined}} onClick={()=>onFeedback('bad')}>👎</button>
+            </div>
+          )}
         </div>
+
+        {/* Inline mini-trace */}
+        {!isUser && meta?.trace?.length>0 && showMeta && (
+          <div style={css.inlineTrace}>
+            {meta.trace.map((step,i)=>(
+              <div key={i} style={css.traceStepMini}>
+                <span style={css.traceNum}>{i+1}</span>
+                <span style={{fontFamily:'var(--font-mono)',fontSize:'0.6rem',color:'var(--muted)'}}>
+                  {step.step || step.agent || 'step'}
+                </span>
+                <span style={{marginLeft:'auto',fontFamily:'var(--font-mono)',fontSize:'0.58rem',color:'var(--bark-dark)',opacity:.7}}>
+                  {step.duration!=null ? `${step.duration}s` : ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
+function Tag({children,green}) {
+  return (
+    <span style={{fontFamily:'var(--font-mono)',fontSize:'0.52rem',padding:'2px 5px',borderRadius:4,
+      background:green?'rgba(107,143,113,.15)':'rgba(138,118,80,.1)',
+      color:green?'#6B8F71':'var(--bark-dark)',border:`1px solid ${green?'rgba(107,143,113,.2)':'rgba(138,118,80,.15)'}`}}>
+      {children}
+    </span>
+  )
+}
+
+// ─── Typing indicator ────────────────────────────────────────────────────────
 function TypingIndicator() {
   return (
-    <div style={{ display:'flex', gap:'0.75rem', marginBottom:'1.5rem' }}>
-      <div style={{ ...css.avatar, background:'var(--parchment)', border:'1px solid var(--border)', color:'var(--bark)' }}>IX</div>
-      <div style={{ ...css.bubble, background:'white', border:'1px solid var(--border)', borderBottomLeftRadius:4 }}>
-        <div style={{ display:'flex', gap:4, padding:'0.2rem 0', alignItems:'center' }}>
-          {[0,0.2,0.4].map((d,i) => (
-            <div key={i} style={{ width:6, height:6, background:'var(--muted-light)', borderRadius:'50%', animation:`typingBounce 1.2s ${d}s ease infinite` }}/>
+    <div style={{display:'flex',gap:'0.75rem',marginBottom:'1.5rem'}}>
+      <div style={{...css.avatar,background:'var(--parchment)',border:'1px solid var(--border)',color:'var(--bark)'}}>IX</div>
+      <div style={{...css.bubble,background:'white',border:'1px solid var(--border)',borderBottomLeftRadius:4}}>
+        <div style={{display:'flex',gap:4,padding:'0.2rem 0',alignItems:'center'}}>
+          {[0,0.2,0.4].map((d,i)=>(
+            <div key={i} style={{width:6,height:6,background:'var(--muted-light)',borderRadius:'50%',animation:`typingBounce 1.2s ${d}s ease infinite`}}/>
           ))}
         </div>
       </div>
@@ -251,91 +554,418 @@ function TypingIndicator() {
   )
 }
 
-function PapersList({ papers, onSelect, onClose }) {
-  return (
-    <>
-      <div style={css.panelTopbar}>
-        <span>📑</span>
-        <span style={{ flex:1, fontSize:'0.78rem', fontWeight:600, color:'var(--ink)' }}>Research Papers</span>
-        <button style={css.closeBtn} onClick={onClose}>✕</button>
-      </div>
-      <div style={{ flex:1, overflowY:'auto', padding:'0.75rem', display:'flex', flexDirection:'column', gap:'0.5rem' }}>
-        {papers.map(p => (
-          <div key={p.id} style={css.paperItem} className="paper-item">
-            <div style={{ fontSize:'0.72rem', fontWeight:600, color:'var(--ink)', lineHeight:1.4, marginBottom:'0.3rem' }}>{p.title}</div>
-            <div style={{ fontSize:'0.63rem', color:'var(--muted)', marginBottom:'0.4rem' }}>{p.authors}</div>
-            <div style={{ display:'flex', gap:'0.4rem' }}>
-              <button style={css.piBtn} onClick={() => onSelect(p)}>Open PDF</button>
-              <button style={css.piBtn} onClick={() => toast('Citation copied')}>Cite</button>
+// ─── Papers panel ────────────────────────────────────────────────────────────
+function PapersPanel({ papers, loading, activePaper, onSelect, onBack }) {
+  // Side-by-side layout when a paper is selected
+  if (activePaper) {
+    return (
+      <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
+        {/* Header */}
+        <div style={{ display:'flex', alignItems:'center', gap:'0.5rem', padding:'0.5rem 0 0.75rem', borderBottom:'1px solid var(--border)', marginBottom:'0.75rem', flexShrink:0 }}>
+          <button style={css.panelClose} onClick={onBack}>← Back to list</button>
+          <span style={{ fontSize:'0.75rem', fontWeight:600, color:'var(--ink)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{activePaper.title}</span>
+        </div>
+        {/* Split pane */}
+        <div style={{ display:'flex', gap:'0.75rem', flex:1, overflow:'hidden', minHeight:0 }}>
+          {/* Paper list (narrow) */}
+          <div style={{ width:200, flexShrink:0, overflowY:'auto', display:'flex', flexDirection:'column', gap:'0.5rem', paddingRight:'0.5rem', borderRight:'1px solid var(--border)' }}>
+            <div style={{ fontFamily:'var(--font-mono)', fontSize:'0.6rem', letterSpacing:'0.12em', textTransform:'uppercase', color:'var(--muted)', marginBottom:'0.25rem' }}>All Papers</div>
+            {papers.map((p, i) => (
+              <div
+                key={i}
+                style={{
+                  padding:'0.5rem 0.6rem', borderRadius:7, cursor:'none', transition:'all .18s',
+                  border:`1px solid ${activePaper===p ? 'var(--bark)' : 'var(--border)'}`,
+                  background: activePaper===p ? 'rgba(138,118,80,.08)' : 'var(--parchment-light)',
+                }}
+                onClick={() => onSelect({...p, pdfUrl: p.pdf_url})}
+              >
+                <div style={{ fontSize:'0.72rem', fontWeight:600, color:'var(--ink)', lineHeight:1.35, marginBottom:'0.2rem' }}>{p.title || p.id}</div>
+                {p.year && <div style={{ fontFamily:'var(--font-mono)', fontSize:'0.58rem', color:'var(--bark)' }}>{p.year}</div>}
+                {p.authors && <div style={{ fontSize:'0.62rem', color:'var(--muted)', marginTop:2, whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{p.authors}</div>}
+              </div>
+            ))}
+          </div>
+          {/* PDF viewer (wide) */}
+          <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+            {/* Paper meta */}
+            <div style={{ marginBottom:'0.6rem', flexShrink:0 }}>
+              {activePaper.authors && <div style={{ fontSize:'0.68rem', color:'var(--muted)', marginBottom:'0.2rem' }}>{activePaper.authors}</div>}
+              {activePaper.summary && <div style={{ fontSize:'0.7rem', color:'var(--ink-mid)', lineHeight:1.55, marginBottom:'0.5rem' }}>{activePaper.summary}</div>}
+              <div style={{ display:'flex', gap:'0.4rem' }}>
+                {activePaper.url && <a href={activePaper.url} target="_blank" rel="noreferrer" style={css.paperBtn}>Open on arXiv ↗</a>}
+              </div>
             </div>
+            {/* iframe */}
+            {activePaper.pdfUrl ? (
+              <iframe
+                src={activePaper.pdfUrl}
+                style={{ flex:1, border:'1px solid var(--border)', borderRadius:8, minHeight:0 }}
+                title={activePaper.title}
+              />
+            ) : (
+              <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', border:'1px dashed var(--border)', borderRadius:8, gap:'0.5rem' }}>
+                <div style={{ fontSize:'2rem', opacity:.3 }}>📄</div>
+                <div style={{ fontFamily:'var(--font-mono)', fontSize:'0.68rem', color:'var(--muted)' }}>No PDF available — view on arXiv</div>
+                {activePaper.url && (
+                  <a href={activePaper.url} target="_blank" rel="noreferrer" style={css.paperBtn}>Open on arXiv ↗</a>
+                )}
+              </div>
+            )}
           </div>
-        ))}
+        </div>
       </div>
-      <style>{`.paper-item:hover{border-color:var(--bark)!important;background:var(--parchment)!important;}`}</style>
-    </>
-  )
-}
+    )
+  }
 
-function PdfEmbed({ paper, onBack, onClose }) {
-  const [zoom, setZoom] = useState(1)
-  // Use a placeholder PDF since we don't have real URLs
-  const src = paper.url || 'about:blank'
   return (
-    <>
-      <div style={css.panelTopbar}>
-        <button style={css.closeBtn} onClick={onBack}>←</button>
-        <span style={{ flex:1, fontSize:'0.72rem', fontWeight:600, color:'var(--ink)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{paper.title}</span>
-        <button style={css.closeBtn} onClick={onClose}>✕</button>
-      </div>
-      <div style={{ display:'flex', alignItems:'center', gap:'0.5rem', padding:'0.5rem 1rem', borderBottom:'1px solid var(--border)', background:'white', flexShrink:0 }}>
-        <button style={css.piBtn} onClick={() => setZoom(z => Math.max(0.5, z - 0.2))}>−</button>
-        <span style={{ fontFamily:'var(--font-mono)', fontSize:'0.62rem', color:'var(--muted)', minWidth:40, textAlign:'center' }}>{Math.round(zoom*100)}%</span>
-        <button style={css.piBtn} onClick={() => setZoom(z => Math.min(2, z + 0.2))}>+</button>
-      </div>
-      <div style={{ flex:1, overflow:'hidden', background:'#f5f5f5', display:'flex', alignItems:'center', justifyContent:'center' }}>
-        {src === 'about:blank' ? (
-          <div style={{ textAlign:'center', color:'var(--muted-light)', fontFamily:'var(--font-mono)', fontSize:'0.7rem' }}>
-            <div style={{ fontSize:'2.5rem', marginBottom:'1rem', opacity:0.4 }}>📄</div>
-            <div>PDF viewer</div>
-            <div style={{ marginTop:'0.4rem', opacity:0.6 }}>Connect arXiv integration<br/>to load papers inline</div>
+    <div>
+      <div style={css.panelSectionTitle}>Research Papers · arXiv</div>
+      {loading && <Spinner label="Fetching papers…"/>}
+      {!loading && papers.length===0 && (
+        <Empty icon="📚" text="Send a message to fetch relevant papers"/>
+      )}
+      {papers.map((p,i)=>(
+        <div key={i} style={css.paperCard} className="paper-card">
+          <div style={{fontSize:'0.8rem',fontWeight:600,color:'var(--ink)',lineHeight:1.4,marginBottom:'0.3rem'}}>{p.title||p.id}</div>
+          {p.authors && <div style={{fontSize:'0.7rem',color:'var(--muted)',marginBottom:'0.25rem'}}>{p.authors}</div>}
+          {p.year   && <div style={{fontFamily:'var(--font-mono)',fontSize:'0.65rem',color:'var(--bark)',marginBottom:'0.5rem'}}>{p.year}{p.journal?` · ${p.journal}`:''}</div>}
+          {p.summary && <div style={{fontSize:'0.72rem',color:'var(--muted)',lineHeight:1.6,marginBottom:'0.6rem'}}>{p.summary.slice(0,200)}…</div>}
+          <div style={{display:'flex',gap:'0.4rem',flexWrap:'wrap'}}>
+            {p.url && <a href={p.url} target="_blank" rel="noreferrer" style={css.paperBtn}>arXiv →</a>}
+            {p.pdf_url && <button style={css.paperBtn} onClick={()=>onSelect({...p, pdfUrl:p.pdf_url})}>Open PDF</button>}
+            <button style={css.paperBtn} onClick={()=>{navigator.clipboard.writeText(p.title||'');toast('Title copied')}}>Cite</button>
           </div>
-        ) : (
-          <iframe src={src} style={{ width:`${100/zoom}%`, height:`${100/zoom}%`, border:'none', transform:`scale(${zoom})`, transformOrigin:'top left' }} title={paper.title}/>
-        )}
-      </div>
-    </>
+        </div>
+      ))}
+      <style>{`.paper-card:hover{border-color:var(--bark)!important;background:var(--parchment)!important;}`}</style>
+    </div>
   )
 }
 
+// ─── Trace panel ─────────────────────────────────────────────────────────────
+function TracePanel({ meta }) {
+  if (!meta) return <Empty icon="🔍" text="Send a research query to see the reasoning trace"/>
+
+  const { trace=[], parameters={}, intent, domain, processingTime, rewardScore, usedPipeline } = meta
+
+  return (
+    <div>
+      {/* Summary row */}
+      <div style={css.panelSectionTitle}>Reasoning Trace</div>
+      <div style={css.traceMetaRow}>
+        {intent      && <MetaChip label="Intent"   value={intent}/>}
+        {domain      && <MetaChip label="Domain"   value={domain}/>}
+        {processingTime && <MetaChip label="Time"  value={`${processingTime}s`}/>}
+        {rewardScore!=null && <MetaChip label="Reward" value={rewardScore.toFixed(3)}/>}
+        <MetaChip label="Pipeline" value={usedPipeline ? 'Full' : 'Fast'}/>
+      </div>
+
+      {/* Trace steps */}
+      {trace.length>0 ? (
+        <>
+          <div style={{fontFamily:'var(--font-mono)',fontSize:'0.58rem',letterSpacing:'0.12em',textTransform:'uppercase',color:'var(--muted-light)',marginBottom:'0.5rem'}}>
+            {trace.length} steps
+          </div>
+          {trace.map((step,i)=>(
+            <TraceStep key={i} step={step} index={i}/>
+          ))}
+        </>
+      ) : (
+        <Empty icon="📋" text="No detailed trace available for this response (fast path used)"/>
+      )}
+
+      {/* Extracted parameters */}
+      {Object.keys(parameters).length>0 && (
+        <>
+          <div style={{...css.panelSectionTitle,marginTop:'1.25rem'}}>Extracted Parameters</div>
+          {Object.entries(parameters).map(([k,v])=>(
+            <div key={k} style={css.paramRow}>
+              <span style={css.paramKey}>{k.replace(/_/g,' ')}</span>
+              <span style={css.paramVal}>{typeof v==='object' ? (v.value??JSON.stringify(v)) : v}</span>
+              {typeof v==='object' && v.unit && <span style={css.paramUnit}>{v.unit}</span>}
+              {typeof v==='object' && v.confidence && (
+                <span style={css.paramConf}>{Math.round(v.confidence*100)}%</span>
+              )}
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  )
+}
+
+function TraceStep({ step, index }) {
+  const [open, setOpen] = useState(false)
+  const name    = step.step || step.agent || step.name || `Step ${index+1}`
+  const summary = step.summary || step.result || step.output || ''
+  const hasMeta = step.duration!=null || step.confidence!=null || step.method
+
+  return (
+    <div style={css.traceStep}>
+      <div style={css.traceStepHeader} onClick={()=>setOpen(v=>!v)}>
+        <div style={css.traceIdx}>{index+1}</div>
+        <div style={{flex:1}}>
+          <div style={{fontSize:'0.75rem',fontWeight:600,color:'var(--ink)',textTransform:'capitalize'}}>{name}</div>
+          {summary && !open && <div style={{fontSize:'0.65rem',color:'var(--muted)',marginTop:2,lineHeight:1.4}}>{String(summary).slice(0,80)}{String(summary).length>80?'…':''}</div>}
+        </div>
+        {hasMeta && (
+          <div style={{display:'flex',gap:'0.4rem',alignItems:'center',flexShrink:0}}>
+            {step.duration!=null && <span style={css.traceBadge}>{step.duration}s</span>}
+            {step.method          && <span style={css.traceBadge}>{step.method}</span>}
+            {step.confidence!=null && <span style={{...css.traceBadge,background:'rgba(107,143,113,.15)',color:'#6B8F71'}}>{Math.round(step.confidence*100)}%</span>}
+          </div>
+        )}
+        <span style={{fontSize:'0.6rem',color:'var(--muted-light)',marginLeft:'0.4rem'}}>{open?'▲':'▼'}</span>
+      </div>
+      {open && (
+        <div style={css.traceStepBody}>
+          {summary && <div style={{fontSize:'0.72rem',color:'var(--ink-mid)',lineHeight:1.65,marginBottom:'0.5rem'}}>{String(summary)}</div>}
+          {Object.entries(step).filter(([k])=>!['step','agent','name','summary','result','output','duration','confidence','method'].includes(k)).map(([k,v])=>(
+            <div key={k} style={{display:'flex',gap:'0.5rem',marginBottom:'0.25rem'}}>
+              <span style={{fontFamily:'var(--font-mono)',fontSize:'0.6rem',color:'var(--muted)',minWidth:100,flexShrink:0}}>{k}</span>
+              <span style={{fontFamily:'var(--font-mono)',fontSize:'0.6rem',color:'var(--ink-mid)',wordBreak:'break-all'}}>{typeof v==='object'?JSON.stringify(v,null,1):String(v)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Causal analysis panel ───────────────────────────────────────────────────
+function CausalPanel({ data, loading }) {
+  if (loading) return <Spinner label="Running causal analysis…"/>
+  if (!data)   return <Empty icon="🔬" text="Click 'Causal' in the toolbar to run analysis"/>
+  if (data.error) return (
+    <div style={{padding:'1rem',background:'rgba(181,97,74,.08)',borderRadius:8,border:'1px solid rgba(181,97,74,.2)'}}>
+      <div style={{fontSize:'0.72rem',color:'var(--error)'}}>{data.error}</div>
+    </div>
+  )
+
+  const cr = data.causal_results || {}
+  const links = data.arxiv_links || []
+  const paramsAnalyzed = data.parameters_analyzed || []
+
+  return (
+    <div>
+      <div style={css.panelSectionTitle}>Causal Analysis</div>
+
+      {paramsAnalyzed.length>0 && (
+        <div style={{display:'flex',flexWrap:'wrap',gap:4,marginBottom:'1rem'}}>
+          {paramsAnalyzed.map(p=>(
+            <span key={p} style={{fontFamily:'var(--font-mono)',fontSize:'0.58rem',padding:'2px 6px',borderRadius:4,background:'rgba(138,118,80,.1)',color:'var(--bark)'}}>{p}</span>
+          ))}
+        </div>
+      )}
+
+      {/* Causal graph / effects */}
+      {cr.causal_effects && Object.keys(cr.causal_effects).length>0 && (
+        <>
+          <div style={css.subHeading}>Causal Effects</div>
+          {Object.entries(cr.causal_effects).map(([k,v])=>(
+            <div key={k} style={css.causalRow}>
+              <div style={{fontSize:'0.72rem',fontWeight:600,color:'var(--ink)',marginBottom:2}}>{k.replace(/_/g,' ')}</div>
+              <div style={{fontSize:'0.68rem',color:'var(--muted)',lineHeight:1.5}}>{typeof v==='object'?JSON.stringify(v,null,2):String(v)}</div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {/* DoWhy / stats */}
+      {cr.statistics && (
+        <>
+          <div style={css.subHeading}>Statistics</div>
+          <div style={css.codeBlock}>{JSON.stringify(cr.statistics,null,2)}</div>
+        </>
+      )}
+
+      {/* Raw result fallback */}
+      {!cr.causal_effects && !cr.statistics && Object.keys(cr).length>0 && (
+        <>
+          <div style={css.subHeading}>Analysis Result</div>
+          <div style={css.codeBlock}>{JSON.stringify(cr,null,2)}</div>
+        </>
+      )}
+
+      {/* arXiv links from causal */}
+      {links.length>0 && (
+        <>
+          <div style={{...css.subHeading,marginTop:'1.25rem'}}>Related Papers</div>
+          {links.map((p,i)=>(
+            <div key={i} style={{marginBottom:'0.5rem'}}>
+              <a href={p.url||p.arxiv_url||'#'} target="_blank" rel="noreferrer"
+                 style={{fontSize:'0.7rem',color:'var(--bark)',textDecoration:'underline',lineHeight:1.4}}>
+                {p.title||p.id}
+              </a>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── Optimisation panel ──────────────────────────────────────────────────────
+function OptimizationPanel({ data, polling }) {
+  if (polling && !data) return <Spinner label="Waiting for Bayesian optimisation…"/>
+  if (!data) return <Empty icon="⚙️" text="Optimisation runs automatically after a research query with numeric parameters"/>
+
+  const status = data.status || 'unknown'
+  const result = data.result || {}
+  const optimal = result.optimal_parameters || result.best_parameters || {}
+
+  const statusColor = status==='completed'?'#6B8F71':status==='failed'||status==='timeout'?'#B5614A':'var(--bark)'
+
+  return (
+    <div>
+      <div style={css.panelSectionTitle}>Bayesian Optimisation</div>
+
+      <div style={{display:'flex',alignItems:'center',gap:'0.5rem',marginBottom:'1rem'}}>
+        <div style={{width:8,height:8,borderRadius:'50%',background:statusColor,flexShrink:0,
+          animation: polling?'pulse2 1.5s infinite':undefined}}/>
+        <span style={{fontFamily:'var(--font-mono)',fontSize:'0.7rem',fontWeight:600,color:statusColor,textTransform:'uppercase'}}>
+          {polling?'Running…':status}
+        </span>
+        {data.timestamp && <span style={{fontFamily:'var(--font-mono)',fontSize:'0.58rem',color:'var(--muted)',marginLeft:'auto'}}>{new Date(data.timestamp).toLocaleTimeString()}</span>}
+      </div>
+
+      {data.error && (
+        <div style={{padding:'0.75rem',background:'rgba(181,97,74,.08)',borderRadius:8,border:'1px solid rgba(181,97,74,.15)',fontSize:'0.7rem',color:'var(--error)',marginBottom:'1rem'}}>
+          {data.error}
+        </div>
+      )}
+
+      {Object.keys(optimal).length>0 && (
+        <>
+          <div style={css.subHeading}>Optimal Parameters</div>
+          {Object.entries(optimal).map(([k,v])=>(
+            <div key={k} style={css.paramRow}>
+              <span style={css.paramKey}>{k.replace(/_/g,' ')}</span>
+              <span style={{...css.paramVal,color:'var(--sage)',fontWeight:700}}>{typeof v==='object'?JSON.stringify(v):String(v)}</span>
+            </div>
+          ))}
+        </>
+      )}
+
+      {result.best_value!=null && (
+        <div style={{marginTop:'0.75rem'}}>
+          <div style={css.subHeading}>Best Score</div>
+          <div style={{fontFamily:'var(--font-mono)',fontSize:'1.1rem',fontWeight:700,color:'var(--sage)'}}>{Number(result.best_value).toFixed(4)}</div>
+        </div>
+      )}
+
+      {result.iterations!=null && (
+        <div style={{fontFamily:'var(--font-mono)',fontSize:'0.62rem',color:'var(--muted)',marginTop:'0.5rem'}}>
+          {result.iterations} iterations · {result.method||'Bayesian'}
+        </div>
+      )}
+
+      {/* Full result for advanced users */}
+      {Object.keys(result).length>0 && (
+        <>
+          <div style={{...css.subHeading,marginTop:'1rem'}}>Full Result</div>
+          <div style={css.codeBlock}>{JSON.stringify(result,null,2)}</div>
+        </>
+      )}
+    </div>
+  )
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+function MetaChip({label,value}) {
+  return (
+    <div style={{background:'rgba(138,118,80,.07)',border:'1px solid rgba(138,118,80,.12)',borderRadius:6,padding:'0.3rem 0.6rem',flexShrink:0}}>
+      <div style={{fontFamily:'var(--font-mono)',fontSize:'0.5rem',color:'var(--muted-light)',marginBottom:1}}>{label}</div>
+      <div style={{fontFamily:'var(--font-mono)',fontSize:'0.65rem',fontWeight:600,color:'var(--ink-mid)'}}>{value}</div>
+    </div>
+  )
+}
+
+function Spinner({label}) {
+  return (
+    <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',padding:'2.5rem',gap:'0.75rem'}}>
+      <div style={{width:22,height:22,border:'2px solid var(--border)',borderTopColor:'var(--bark)',borderRadius:'50%',animation:'spin .9s linear infinite'}}/>
+      <div style={{fontFamily:'var(--font-mono)',fontSize:'0.65rem',color:'var(--muted)'}}>{label}</div>
+    </div>
+  )
+}
+
+function Empty({icon,text}) {
+  return (
+    <div style={{textAlign:'center',padding:'2.5rem 1rem'}}>
+      <div style={{fontSize:'2rem',marginBottom:'0.75rem',opacity:.4}}>{icon}</div>
+      <div style={{fontFamily:'var(--font-mono)',fontSize:'0.65rem',color:'var(--muted-light)',lineHeight:1.6}}>{text}</div>
+    </div>
+  )
+}
+
+// ─── Styles ──────────────────────────────────────────────────────────────────
 const css = {
   wrap: { flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:'var(--parchment-light)' },
-  topbar: { display:'flex', alignItems:'center', padding:'0.8rem 1.5rem', borderBottom:'1px solid var(--border)', background:'rgba(255,255,255,.6)', backdropFilter:'blur(12px)', gap:'0.8rem', flexShrink:0 },
-  backBtn: { background:'none', border:'none', cursor:'none', color:'var(--muted)', fontSize:'0.8rem', display:'flex', alignItems:'center', gap:'0.4rem', padding:'0.3rem 0.6rem', borderRadius:6, transition:'all .2s', fontFamily:'var(--font-sans)' },
-  domainBadge: { display:'flex', alignItems:'center', gap:'0.4rem', background:'var(--parchment)', border:'1px solid var(--border)', borderRadius:20, padding:'0.28rem 0.7rem', fontSize:'0.7rem', fontWeight:600, color:'var(--bark-dark)', flexShrink:0 },
-  titleInput: { flex:1, background:'none', border:'none', fontFamily:'var(--font-sans)', fontSize:'0.85rem', fontWeight:600, color:'var(--ink)', outline:'none', minWidth:0 },
-  topbarActions: { display:'flex', alignItems:'center', gap:'0.4rem', marginLeft:'auto' },
-  topBtn: (active) => ({ background: active ? 'rgba(138,118,80,.08)' : 'none', border:`1px solid ${active ? 'var(--bark)' : 'var(--border)'}`, borderRadius:7, padding:'0.32rem 0.65rem', fontSize:'0.7rem', color: active ? 'var(--bark)' : 'var(--muted)', cursor:'none', transition:'all .2s', display:'flex', alignItems:'center', gap:'0.3rem', fontFamily:'var(--font-sans)', fontWeight:500 }),
+  topbar: { display:'flex', alignItems:'center', padding:'0.75rem 1.4rem', borderBottom:'1px solid var(--border)', background:'rgba(255,255,255,.6)', backdropFilter:'blur(12px)', gap:'0.6rem', flexShrink:0, flexWrap:'wrap' },
+  backBtn: { background:'none', border:'none', cursor:'none', color:'var(--muted)', fontSize:'0.88rem', display:'flex', alignItems:'center', gap:'0.4rem', padding:'0.3rem 0.6rem', borderRadius:6, transition:'all .2s', fontFamily:'var(--font-sans)' },
+  domainBadge: { display:'flex', alignItems:'center', gap:'0.4rem', background:'var(--parchment)', border:'1px solid var(--border)', borderRadius:20, padding:'0.28rem 0.7rem', fontSize:'0.76rem', fontWeight:600, color:'var(--bark-dark)', flexShrink:0 },
+  titleInput: { flex:1, background:'none', border:'none', fontFamily:'var(--font-sans)', fontSize:'0.92rem', fontWeight:600, color:'var(--ink)', outline:'none', minWidth:80 },
+  topbarActions: { display:'flex', alignItems:'center', gap:'0.35rem', flexWrap:'wrap' },
+  topBtn: (active) => ({ background: active?'rgba(138,118,80,.1)':'none', border:`1px solid ${active?'var(--bark)':'var(--border)'}`, borderRadius:7, padding:'0.32rem 0.7rem', fontSize:'0.74rem', color:active?'var(--bark)':'var(--muted)', cursor:'none', transition:'all .2s', fontFamily:'var(--font-sans)', fontWeight:500, whiteSpace:'nowrap' }),
+
   body: { flex:1, display:'flex', overflow:'hidden' },
   messagesPane: { flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minWidth:0 },
   messagesScroll: { flex:1, overflowY:'auto', padding:'2rem 2.5rem' },
-  divider: { textAlign:'center', fontFamily:'var(--font-mono)', fontSize:'0.58rem', color:'var(--muted-light)', letterSpacing:'0.1em', margin:'0 0 1.5rem', display:'flex', alignItems:'center', gap:'0.75rem' },
-  msg: { display:'flex', gap:'0.75rem', marginBottom:'1.6rem', animation:'msgIn .3s ease forwards' },
-  avatar: { width:32, height:32, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'0.62rem', fontWeight:700, flexShrink:0, marginTop:2 },
-  bubble: { maxWidth:'70%', borderRadius:14, padding:'0.88rem 1.1rem', fontSize:'0.85rem', lineHeight:1.75 },
-  msgMeta: { fontFamily:'var(--font-mono)', fontSize:'0.55rem', color:'var(--muted-light)', marginTop:'0.35rem', display:'flex', alignItems:'center', gap:'0.4rem' },
+  divider: { display:'flex', alignItems:'center', gap:'0.75rem', textAlign:'center', fontFamily:'var(--font-mono)', fontSize:'0.65rem', color:'var(--muted-light)', letterSpacing:'0.1em', margin:'0 0 1.5rem' },
+  divLine: { flex:1, height:1, background:'var(--border)' },
+  msg: { display:'flex', gap:'0.85rem', marginBottom:'1.8rem', animation:'msgIn .3s ease forwards' },
+  avatar: { width:34, height:34, borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'0.68rem', fontWeight:700, flexShrink:0, marginTop:2 },
+  bubble: { borderRadius:14, padding:'0.95rem 1.1rem', fontSize:'0.92rem', lineHeight:1.8 },
   sources: { display:'flex', flexWrap:'wrap', gap:'0.4rem', marginTop:'0.7rem' },
-  sourceChip: { background:'var(--parchment)', border:'1px solid var(--border)', borderRadius:6, padding:'0.28rem 0.6rem', fontSize:'0.64rem', color:'var(--bark-dark)' },
-  confBar: { display:'flex', alignItems:'center', gap:'0.5rem', marginTop:'0.6rem', fontFamily:'var(--font-mono)', fontSize:'0.58rem', color:'var(--muted)' },
+  sourceChip: { background:'var(--parchment)', border:'1px solid var(--border)', borderRadius:6, padding:'0.28rem 0.6rem', fontSize:'0.7rem', color:'var(--bark-dark)' },
+  confBar: { display:'flex', alignItems:'center', gap:'0.5rem', marginTop:'0.6rem', fontFamily:'var(--font-mono)', fontSize:'0.65rem', color:'var(--muted)' },
+  msgMeta: { fontFamily:'var(--font-mono)', fontSize:'0.62rem', color:'var(--muted-light)', marginTop:'0.35rem', display:'flex', alignItems:'center', gap:'0.4rem', flexWrap:'wrap' },
+  metaBtn: { background:'none', border:'none', cursor:'none', fontFamily:'var(--font-mono)', fontSize:'0.62rem', color:'var(--bark)', padding:0 },
+  fbBtn: { background:'none', border:'none', cursor:'none', fontSize:'0.82rem', padding:'1px 3px', borderRadius:4, transition:'all .15s', opacity:.5 },
+  inlineTrace: { marginTop:'0.4rem', background:'rgba(138,118,80,.04)', border:'1px solid rgba(138,118,80,.1)', borderRadius:8, padding:'0.5rem', display:'flex', flexDirection:'column', gap:2 },
+  traceStepMini: { display:'flex', alignItems:'center', gap:'0.5rem', padding:'0.25rem 0' },
+  traceNum: { width:18, height:18, borderRadius:'50%', background:'rgba(138,118,80,.15)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'0.55rem', fontFamily:'var(--font-mono)', color:'var(--bark)', flexShrink:0 },
+
   inputArea: { padding:'0.9rem 2rem 1.1rem', background:'rgba(255,255,255,.6)', backdropFilter:'blur(12px)', borderTop:'1px solid var(--border)', flexShrink:0 },
   inputWrap: { background:'white', border:'1.5px solid var(--border)', borderRadius:14, display:'flex', alignItems:'flex-end', gap:'0.5rem', padding:'0.7rem 0.7rem 0.7rem 1.1rem', transition:'all .2s' },
-  textarea: { flex:1, border:'none', outline:'none', fontFamily:'var(--font-sans)', fontSize:'0.85rem', color:'var(--ink)', background:'transparent', resize:'none', maxHeight:120, lineHeight:1.6 },
-  attachBtn: { width:34, height:34, background:'transparent', border:'none', cursor:'none', color:'var(--muted)', fontSize:'1rem', borderRadius:8, transition:'all .2s', display:'flex', alignItems:'center', justifyContent:'center' },
-  sendBtn: { width:34, height:34, background:'var(--bark-deeper)', border:'none', borderRadius:8, color:'var(--parchment-light)', fontSize:'0.8rem', cursor:'none', transition:'all .2s', display:'flex', alignItems:'center', justifyContent:'center' },
-  inputFooter: { marginTop:'0.4rem', display:'flex', alignItems:'center', gap:'1rem', fontFamily:'var(--font-mono)', fontSize:'0.58rem', color:'var(--muted-light)' },
-  arxivBtn: { background:'none', border:'none', cursor:'none', fontFamily:'var(--font-mono)', fontSize:'0.6rem', color:'var(--bark)', display:'flex', alignItems:'center', gap:'0.35rem', padding:'2px 6px', borderRadius:5, transition:'opacity .2s' },
-  pdfPanel: { borderLeft:'1px solid var(--border)', overflow:'hidden', transition:'width .35s cubic-bezier(.4,0,.2,1)', display:'flex', flexDirection:'column', background:'white', flexShrink:0 },
-  panelTopbar: { display:'flex', alignItems:'center', gap:'0.6rem', padding:'0.75rem 1rem', borderBottom:'1px solid var(--border)', background:'var(--parchment)', flexShrink:0 },
-  closeBtn: { background:'none', border:'none', cursor:'none', color:'var(--muted)', fontSize:'0.85rem', padding:'3px 6px', borderRadius:5, transition:'all .2s', fontFamily:'var(--font-sans)' },
-  paperItem: { background:'var(--parchment-light)', border:'1px solid var(--border)', borderRadius:8, padding:'0.72rem', cursor:'none', transition:'all .2s' },
-  piBtn: { fontSize:'0.6rem', padding:'2px 8px', borderRadius:4, border:'1px solid var(--border)', background:'white', color:'var(--bark-dark)', cursor:'none', transition:'all .2s', fontFamily:'var(--font-mono)' },
+  textarea: { flex:1, border:'none', outline:'none', fontFamily:'var(--font-sans)', fontSize:'0.92rem', color:'var(--ink)', background:'transparent', resize:'none', maxHeight:120, lineHeight:1.65 },
+  sendBtn: { width:36, height:36, background:'var(--bark-deeper)', border:'none', borderRadius:8, color:'var(--parchment-light)', fontSize:'0.88rem', cursor:'none', transition:'all .2s', display:'flex', alignItems:'center', justifyContent:'center' },
+  inputFooter: { marginTop:'0.4rem', display:'flex', alignItems:'center', gap:'1rem', fontFamily:'var(--font-mono)', fontSize:'0.63rem', color:'var(--muted-light)' },
+
+  // Right panel
+  panel: { borderLeft:'1px solid var(--border)', overflow:'hidden', transition:'width .32s cubic-bezier(.4,0,.2,1)', flexShrink:0, background:'white' },
+  panelInner: { width:'100%', height:'100%', display:'flex', flexDirection:'column', overflow:'hidden' },
+  panelTabBar: { display:'flex', gap:2, padding:'0.5rem 0.75rem 0', borderBottom:'1px solid var(--border)', background:'var(--parchment)', flexShrink:0 },
+  panelTabBtn: (active) => ({ flex:1, padding:'0.42rem 0', border:'none', borderRadius:'6px 6px 0 0', fontFamily:'var(--font-sans)', fontSize:'0.72rem', fontWeight:600, cursor:'none', transition:'all .2s', background:active?'white':'transparent', color:active?'var(--ink)':'var(--muted)', borderBottom:active?'none':`1px solid var(--border)` }),
+  panelClose: { background:'none', border:'none', cursor:'none', color:'var(--muted)', fontSize:'0.85rem', padding:'3px 6px', borderRadius:5, transition:'all .2s', fontFamily:'var(--font-sans)', marginLeft:'auto' },
+  panelScroll: { flex:1, overflowY:'auto', padding:'1rem', scrollbarWidth:'thin', scrollbarColor:'rgba(138,118,80,.2) transparent' },
+  panelSectionTitle: { fontFamily:'var(--font-mono)', fontSize:'0.68rem', letterSpacing:'0.15em', textTransform:'uppercase', color:'var(--bark)', marginBottom:'0.75rem', paddingBottom:'0.4rem', borderBottom:'1px solid var(--border)' },
+  subHeading: { fontFamily:'var(--font-mono)', fontSize:'0.64rem', letterSpacing:'0.1em', textTransform:'uppercase', color:'var(--muted)', marginBottom:'0.4rem', marginTop:'0.6rem' },
+
+  // Trace
+  traceMetaRow: { display:'flex', gap:'0.5rem', flexWrap:'wrap', marginBottom:'1rem' },
+  traceStep: { border:'1px solid var(--border)', borderRadius:9, marginBottom:'0.5rem', overflow:'hidden' },
+  traceStepHeader: { display:'flex', alignItems:'center', gap:'0.6rem', padding:'0.65rem 0.75rem', cursor:'none', background:'var(--parchment-light)', transition:'background .15s' },
+  traceIdx: { width:24, height:24, borderRadius:'50%', background:'rgba(138,118,80,.15)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'0.65rem', fontFamily:'var(--font-mono)', color:'var(--bark)', fontWeight:700, flexShrink:0 },
+  traceBadge: { fontFamily:'var(--font-mono)', fontSize:'0.6rem', padding:'2px 6px', borderRadius:4, background:'rgba(138,118,80,.1)', color:'var(--bark-dark)' },
+  traceStepBody: { padding:'0.65rem 0.75rem 0.8rem', borderTop:'1px solid var(--border)', background:'white' },
+
+  // Params
+  paramRow: { display:'flex', alignItems:'center', gap:'0.5rem', padding:'0.45rem 0', borderBottom:'1px solid rgba(138,118,80,.07)', flexWrap:'wrap' },
+  paramKey: { fontFamily:'var(--font-mono)', fontSize:'0.68rem', color:'var(--muted)', minWidth:110, flexShrink:0 },
+  paramVal: { fontFamily:'var(--font-mono)', fontSize:'0.74rem', fontWeight:600, color:'var(--ink-mid)' },
+  paramUnit: { fontFamily:'var(--font-mono)', fontSize:'0.63rem', color:'var(--bark)', opacity:.8 },
+  paramConf: { fontFamily:'var(--font-mono)', fontSize:'0.6rem', padding:'1px 4px', borderRadius:3, background:'rgba(107,143,113,.12)', color:'#6B8F71', marginLeft:'auto' },
+
+  // Causal
+  causalRow: { background:'var(--parchment-light)', border:'1px solid var(--border)', borderRadius:8, padding:'0.65rem', marginBottom:'0.5rem' },
+
+  // Code block
+  codeBlock: { fontFamily:'var(--font-mono)', fontSize:'0.65rem', lineHeight:1.65, color:'var(--ink-mid)', background:'rgba(138,118,80,.04)', border:'1px solid rgba(138,118,80,.1)', borderRadius:8, padding:'0.75rem', whiteSpace:'pre-wrap', wordBreak:'break-all', maxHeight:280, overflowY:'auto' },
+
+  // Papers
+  paperCard: { background:'var(--parchment-light)', border:'1px solid var(--border)', borderRadius:9, padding:'0.85rem', marginBottom:'0.6rem', transition:'all .2s' },
+  paperBtn: { fontSize:'0.67rem', padding:'4px 10px', borderRadius:4, border:'1px solid var(--border)', background:'white', color:'var(--bark-dark)', cursor:'none', transition:'all .2s', fontFamily:'var(--font-mono)', textDecoration:'none' },
 }
