@@ -16,6 +16,18 @@ export function ChatProvider({ children }) {
     catch { return DEMO_HISTORY }
   })
 
+  // Persisted user preference for how many arXiv papers to fetch (1–100, default 20)
+  const [maxPapers, setMaxPapersState] = useState(() => {
+    const saved = parseInt(localStorage.getItem('ixora_max_papers'), 10)
+    return !isNaN(saved) && saved >= 1 && saved <= 100 ? saved : 20
+  })
+
+  const setMaxPapers = useCallback((val) => {
+    const clamped = Math.max(1, Math.min(100, parseInt(val, 10) || 20))
+    setMaxPapersState(clamped)
+    localStorage.setItem('ixora_max_papers', String(clamped))
+  }, [])
+
   const save = (h) => {
     setHistory(h)
     localStorage.setItem('ixora_history', JSON.stringify(h))
@@ -58,7 +70,10 @@ export function ChatProvider({ children }) {
   }, [])
 
   return (
-    <ChatContext.Provider value={{ history, addChat, updateChat, toggleBookmark, deleteChat, appendMessage }}>
+    <ChatContext.Provider value={{
+      history, addChat, updateChat, toggleBookmark, deleteChat, appendMessage,
+      maxPapers, setMaxPapers,
+    }}>
       {children}
     </ChatContext.Provider>
   )

@@ -1,8 +1,7 @@
 # core/main.py - OPTIMIZED VERSION (< 180s target)
-# Changes:
-# 1. Causal analysis REMOVED from main flow (button-only via /causal endpoint)
-# 2. Bayesian optimization moved to BACKGROUND (displays when ready)
-# 3. Tighter parameter extraction with timeout
+from dotenv import load_dotenv
+load_dotenv()
+from core.auth.auth_api import router as auth_router
 from fastapi import FastAPI, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from core.intent_router import classify_conversation_intent, is_out_of_domain, get_out_of_domain_message
@@ -29,8 +28,6 @@ import hashlib
 import numpy as np
 from decimal import Decimal
 import time
-from dotenv import load_dotenv
-load_dotenv()
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pathlib import Path
@@ -47,6 +44,10 @@ import os
 from core.routers import public, dashboard
 from core.routers.dashboard import router as dashboard_router
 from core.routers.public import router as public_router
+import firebase_admin
+from firebase_admin import credentials, auth
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 print(f"CSMODEL_ENABLED: {os.getenv('CSMODEL_ENABLED')}")
 print(f"CSMODEL_USE_FROM_PRETRAINED: {os.getenv('CSMODEL_USE_FROM_PRETRAINED')}")
 from core.analytics import run_bayesian_optimization  # For background task
@@ -65,15 +66,32 @@ except ImportError:
 os.makedirs("logs", exist_ok=True)
 os.makedirs("models", exist_ok=True)
 
-# Logging
-logging.basicConfig(
-    level=logging.INFO,  # Changed from DEBUG to INFO for speed
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("backend_debug.log", encoding='utf-8')
-    ]
-)
+# Logging — explicit setup so it works even when uvicorn pre-configures root logger
+_log_fmt = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+
+_stream_handler = logging.StreamHandler()
+_stream_handler.setFormatter(_log_fmt)
+_stream_handler.setLevel(logging.INFO)
+
+_file_handler = logging.FileHandler("backend_debug.log", encoding="utf-8")
+_file_handler.setFormatter(_log_fmt)
+_file_handler.setLevel(logging.INFO)
+
+# Force-configure the root logger (works even if uvicorn already touched it)
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.INFO)
+if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
+           for h in _root_logger.handlers):
+    _root_logger.addHandler(_stream_handler)
+_root_logger.addHandler(_file_handler)
+
+# Ensure all core sub-loggers propagate up to root (so they appear in console + file)
+for _name in ("core.arxiv", "core.langgraph", "core.analytics",
+              "core.mistral", "core.model_loader", "core.rlhf", "biomed"):
+    _child = logging.getLogger(_name)
+    _child.setLevel(logging.INFO)
+    _child.propagate = True   # sends records up to root logger → our handlers
+
 logger = logging.getLogger("biomed")
 
 app = FastAPI(title="IXORA - Multi-Agent Research Assistant (Optimized)")
@@ -90,6 +108,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_home():
@@ -149,6 +168,166 @@ def health():
     except Exception as e:
         return {"status": "degraded", "error": str(e), "uri_used": MONGODB_URI}
 
+
+############## FIREBASE ######################
+
+import firebase_admin
+from firebase_admin import credentials, auth
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+
+# ─── Firebase Admin SDK initialization ──────────────────────────────────────
+try:
+    # Build credential dict from environment variables
+    cred_dict = {
+        "type": "service_account",
+        "project_id": os.getenv("FIREBASE_PROJECT_ID"),
+        "private_key_id": os.getenv("FIREBASE_PRIVATE_KEY_ID", ""),  # optional
+        "private_key": os.getenv("FIREBASE_PRIVATE_KEY", "").replace("\\n", "\n"),
+        "client_email": os.getenv("FIREBASE_CLIENT_EMAIL"),
+        "client_id": os.getenv("FIREBASE_CLIENT_ID", ""),  # optional
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+        "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+        "client_x509_cert_url": (
+            f"https://www.googleapis.com/robot/v1/metadata/x509/"
+            f"{os.getenv('FIREBASE_CLIENT_EMAIL')}"
+        ) if os.getenv("FIREBASE_CLIENT_EMAIL") else None,
+    }
+
+    # Remove keys with empty values to avoid validation errors
+    cred_dict = {k: v for k, v in cred_dict.items() if v is not None and v != ""}
+
+    # Basic required fields check (helps debugging)
+    required = ["project_id", "private_key", "client_email"]
+    missing = [k for k in required if k not in cred_dict or not cred_dict[k]]
+    if missing:
+        raise ValueError(f"Missing required Firebase env vars: {', '.join(missing)}")
+
+    cred = credentials.Certificate(cred_dict)
+
+    if not firebase_admin._apps:
+        firebase_admin.initialize_app(cred)
+        logger.info(
+            f"Firebase Admin SDK initialized successfully | "
+            f"project: {cred_dict['project_id']}"
+        )
+    else:
+        logger.info("Firebase Admin SDK already initialized")
+
+except ValueError as ve:
+    logger.error(f"Firebase configuration error: {ve}")
+    # In development you can continue → in production you may want to raise
+except Exception as e:
+    logger.exception("Failed to initialize Firebase Admin SDK")
+    # Decide: continue degraded or crash startup
+    # For now we continue (auth endpoints will 500 until fixed)
+
+# ─── Firebase token verification dependency ─────────────────────────────────
+firebase_bearer = HTTPBearer(
+    scheme_name="Firebase ID Token",
+    auto_error=False  # we'll handle missing token ourselves
+)
+
+async def get_current_firebase_user(
+    auth_header: HTTPAuthorizationCredentials | None = Depends(firebase_bearer)
+) -> dict:
+    if not auth_header:
+        raise HTTPException(
+            status_code=401,
+            detail="Authorization header missing",
+            headers={"WWW-Authenticate": 'Bearer error="no_token"'},
+        )
+
+    token = auth_header.credentials
+
+    try:
+        decoded_token = auth.verify_id_token(token, check_revoked=True)
+        # check_revoked=True adds extra security (requires network call)
+        # remove it in very high-traffic scenarios if latency becomes issue
+        return decoded_token
+    except auth.ExpiredIdTokenError:
+        raise HTTPException(status_code=401, detail="Firebase ID token has expired")
+    except auth.RevokedIdTokenError:
+        raise HTTPException(status_code=401, detail="Firebase ID token has been revoked")
+    except auth.InvalidIdTokenError:
+        raise HTTPException(status_code=401, detail="Invalid Firebase ID token")
+    except auth.CertificateFetchError:
+        raise HTTPException(
+            status_code=503,
+            detail="Firebase certificate fetch failed (network/cert issue)"
+        )
+    except Exception as e:
+        logger.error(f"Unexpected Firebase verify error: {e}", exc_info=True)
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {str(e)}")
+
+
+# ─── Firebase-powered Google login endpoint ─────────────────────────────────
+@app.post("/api/auth/google")
+async def firebase_google_login(
+    firebase_user: dict = Depends(get_current_firebase_user)
+):
+    email = firebase_user.get("email")
+    if not email:
+        raise HTTPException(status_code=400, detail="Email not provided by Firebase")
+
+    email = email.lower().strip()
+
+    existing = users.find_one({"email": email})
+
+    if existing:
+        update_fields = {
+            "last_login": datetime.utcnow(),
+        }
+        if picture := firebase_user.get("picture"):
+            update_fields["google_picture"] = picture
+
+        users.update_one(
+            {"_id": existing["_id"]},
+            {"$set": update_fields}
+        )
+        user_doc = users.find_one({"_id": existing["_id"]})
+    else:
+        # Split name safely
+        full_name = firebase_user.get("name", "").strip()
+        name_parts = full_name.split(" ", 1) if full_name else ["", ""]
+        first_name = name_parts[0].strip()
+        last_name = name_parts[1].strip() if len(name_parts) > 1 else ""
+
+        user_id = str(uuid.uuid4())
+        user_doc = {
+            "_id": user_id,
+            "email": email,
+            "first_name": first_name,
+            "last_name": last_name,
+            "provider": "google",
+            "firebase_uid": firebase_user["uid"],
+            "google_picture": firebase_user.get("picture", ""),
+            "created_at": datetime.utcnow().isoformat(),
+            "last_login": datetime.utcnow(),
+            # Add defaults you had in auth_api.py register
+            "preferences": {"domain": "biomed", "theme": "light"},
+            "is_verified": firebase_user.get("email_verified", False),
+        }
+        users.insert_one(user_doc)
+
+    # Issue your own JWT (same as before)
+    token = create_token(str(user_doc["_id"]), email)
+
+    return {
+        "token": token,
+        "user": {
+            "id": str(user_doc["_id"]),
+            "email": email,
+            "first_name": user_doc.get("first_name", ""),
+            "last_name": user_doc.get("last_name", ""),
+            "provider": user_doc.get("provider", "google"),
+            "picture": user_doc.get("google_picture", ""),
+        },
+        "message": f"Welcome, {user_doc.get('first_name') or email.split('@')[0]}!"
+    }
+
+##########################
 
 class Token(BaseModel):
     access_token: str
@@ -780,8 +959,8 @@ async def causal_analysis_endpoint(req: CausalRequest):
         if req.include_links:
             try:
                 arxiv_links = await asyncio.wait_for(
-                    retrieve_arxiv_evidence(req.query, max_papers=3),
-                    timeout=10.0
+                    retrieve_arxiv_evidence(req.query, max_papers=80),
+                    timeout=60.0
                 )
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning(f"arXiv fetch failed: {e}")
@@ -869,13 +1048,21 @@ async def arxiv_search(request: Request):
             422,
             detail="Missing or invalid 'query' field. Send something like: {'query': 'yeast biomass pH'}"
         )
-    
+
+    # User-controlled paper count: default 20, capped at 100
+    requested = payload.get("max_papers", 20)
     try:
-        # Try arXiv API with SHORTER timeout (8 seconds)
+        max_papers = max(1, min(int(requested), 100))
+    except (TypeError, ValueError):
+        max_papers = 20
+    logger.info(f"📄 User requested {max_papers} papers for query: '{query.strip()}'")
+
+    try:
+        # Try arXiv API — timeout scales with requested paper count
         try:
             papers = await asyncio.wait_for(
-                retrieve_arxiv_evidence(query, max_papers=5),
-                timeout=30  # Reduced from 15.0 to 8.0 seconds
+                retrieve_arxiv_evidence(query, max_papers=max_papers),
+                timeout=max(30, max_papers * 0.75)  # ~30s min, scales up for larger requests
             )
             
             if papers:
@@ -1254,4 +1441,10 @@ async def startup():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info",
+        log_config=None,   # don't let uvicorn overwrite our logging setup
+    )

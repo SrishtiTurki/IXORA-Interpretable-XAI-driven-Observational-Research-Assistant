@@ -223,7 +223,7 @@ export default function LoginPage() {
               <>
                 <button style={s.googleBtn} className="google-btn" onClick={googleAuth}>
                   <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#4285F4" d="M47.5 24.5c0-1.6-.1-3.2-.4-4.7H24v9h13.1c-.6 3-2.3 5.5-4.9 7.2v6h7.9c4.6-4.3 7.4-10.6 7.4-17.5z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.9-6c-2.1 1.4-4.8 2.3-8 2.3-6.1 0-11.3-4.1-13.2-9.7H2.7v6.2C6.7 42.9 14.8 48 24 48z"/><path fill="#FBBC05" d="M10.8 28.8c-.5-1.4-.7-2.9-.7-4.4s.3-3 .7-4.4v-6.2H2.7C1 17.2 0 20.5 0 24s1 6.8 2.7 9.8l8.1-5z"/><path fill="#EA4335" d="M24 9.5c3.4 0 6.5 1.2 8.9 3.5l6.6-6.6C35.9 2.5 30.4 0 24 0 14.8 0 6.7 5.1 2.7 12.6l8.1 6.2C12.7 13.6 17.9 9.5 24 9.5z"/></svg>
-                  Continue with Google
+                  {panel === 'register' ? 'Sign up with Google' : 'Continue with Google'}
                 </button>
                 <div style={s.divider}><div style={s.divLine}/><span>or</span><div style={s.divLine}/></div>
               </>

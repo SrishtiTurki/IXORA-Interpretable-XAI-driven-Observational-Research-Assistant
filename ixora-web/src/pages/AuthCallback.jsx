@@ -20,9 +20,9 @@ export default function AuthCallback() {
           localStorage.setItem('ixora_token', data.token)
           localStorage.setItem('ixora_user', JSON.stringify(data.user))
         }
-        navigate('/')
+        window.location.href = '/'
       })
-      .catch(() => navigate('/login'))
+      .catch(() => { window.location.href = '/login' })
   }, [])
 
   return (

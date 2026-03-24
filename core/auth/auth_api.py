@@ -25,9 +25,9 @@ JWT_SECRET       = os.getenv("JWT_SECRET", "")
 JWT_ALGORITHM    = "HS256"
 JWT_EXPIRE_HOURS = 24 * 7   # 7 days
 
-GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
+"""GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:3000/auth/callback")
+GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:3000/auth/callback")"""
 
 # ─── App Setup ──────────────────────────────────────────────────────────────
 app = FastAPI(title="IXORA Auth API", version="1.0.0")
@@ -193,9 +193,9 @@ async def login(body: LoginRequest):
     )
 
 
-@app.post("/api/auth/google", response_model=TokenResponse)
+"""@app.post("/api/auth/google", response_model=TokenResponse)
 async def google_oauth(body: GoogleCallbackRequest):
-    """Exchange Google auth code for user info and return JWT."""
+    #Exchange Google auth code for user info and return JWT.
     async with httpx.AsyncClient() as client_http:
         # Exchange code for tokens
         token_res = await client_http.post(
@@ -258,7 +258,7 @@ async def google_oauth(body: GoogleCallbackRequest):
         token=token,
         user=sanitize_user(user_doc),
         message=f"Welcome, {first_name}!"
-    )
+    )"""
 
 
 @app.post("/api/auth/forgot-password")
@@ -287,3 +287,6 @@ def health():
         return {"status": "healthy", "database": "connected"}
     except Exception as e:
         return {"status": "degraded", "database": str(e)}
+
+# Add this to auth_api.py
+router = app.router
