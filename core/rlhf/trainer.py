@@ -73,9 +73,9 @@ async def train_reward_model():
     """Train the reward model on collected feedback"""
     try:
         # Load dataset
-        dataset = PreferenceDataset(min_samples=5)
+        dataset = PreferenceDataset(min_samples=3)
         
-        if len(dataset) < 5:
+        if len(dataset) < 3:
             logger.warning("⚠️ Not enough training data (need at least 5 pairs)")
             return False
         
@@ -89,7 +89,7 @@ async def train_reward_model():
             dataset.pairs, test_size=0.2, random_state=42
         )
         
-        if len(train_pairs) < 4:
+        if len(train_pairs) < 2:
             logger.warning("Not enough training pairs after split")
             return False
         

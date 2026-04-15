@@ -81,7 +81,7 @@ async def _check_and_train_async():
         count = len(lines)
         
         # Train every 10 feedbacks
-        if count >= 10 and count % 10 == 0:
+        if count >= 3 and count % 3 == 0:
             logger.info(f"📈 RLHF: {count} feedbacks → starting training...")
             
             try:

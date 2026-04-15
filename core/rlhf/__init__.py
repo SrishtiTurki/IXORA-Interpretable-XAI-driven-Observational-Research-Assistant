@@ -194,7 +194,7 @@ def check_rlhf_status():
             "feedback_count": _feedback_count,
             "model_path_exists": os.path.exists("models/reward_model.pth"),
             "feedback_file_exists": os.path.exists(feedback_file),
-            "ready_for_training": _feedback_count >= 10
+            "ready_for_training": _feedback_count >= 3
         }
         
     except Exception as e:
@@ -215,7 +215,7 @@ def train_on_existing_feedback():
         logger.info("🔄 Training reward model on existing feedback...")
         status = check_rlhf_status()
         
-        if status["feedback_count"] < 5:
+        if status["feedback_count"] < 3:
             logger.warning(f"Not enough feedback to train (need 5, have {status['feedback_count']})")
             return False
         

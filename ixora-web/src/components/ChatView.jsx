@@ -16,6 +16,267 @@ const DOMAIN_MAP = { bio:'biomed', cs:'cs', gen:'general' }
 // ─── right-panel tabs ────────────────────────────────────────────────────────
 const PANEL_TABS = ['papers', 'trace', 'causal', 'optimization']
 
+// ─── XML Response Parser ──────────────────────────────────────────────────────
+// Parses the XML-tagged responses from the backend and renders them as
+// structured React elements. Without this, browser silently hides
+// content inside unknown tags like <explanation>, <hypothesis>, etc.
+function parseXmlResponse(text) {
+  if (!text) return null
+
+  const hasXml = /<(explanation|enthusiasm|hypothesis|clarify|followup|analysis)[\s>]/.test(text)
+
+  // ── Plain text (fast path) ───────────────────────────────────────────────
+  if (!hasXml) {
+    return <PlainText text={text} />
+  }
+
+  // ── XML-structured response ──────────────────────────────────────────────
+  const sections = []
+
+  // Helper: extract a tag's content
+  const extract = (tag) => {
+    const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i')
+    const m = text.match(re)
+    return m ? m[1].trim() : null
+  }
+
+  // 1. Enthusiasm / intro
+  const enthusiasm = extract('enthusiasm')
+  if (enthusiasm) {
+    sections.push(
+      <div key="enthusiasm" style={xmlCss.enthusiasm}>
+        <span style={xmlCss.enthusiasmIcon}>✦</span>
+        <PlainText text={enthusiasm} />
+      </div>
+    )
+  }
+
+  // 2. Clarify
+  const clarify = extract('clarify')
+  if (clarify) {
+    sections.push(
+      <XmlSection key="clarify" icon="❓" label="Clarifications" color="#8A7650">
+        <PlainText text={clarify} />
+      </XmlSection>
+    )
+  }
+
+  // 3. Explanation (main body — most important)
+  const explanation = extract('explanation')
+  if (explanation) {
+    sections.push(
+      <XmlSection key="explanation" icon="□" label="Analysis" color="#4A6741" accent>
+        <ExplanationBody text={explanation} />
+      </XmlSection>
+    )
+  }
+
+  // 4. Hypothesis
+  const hypothesis = extract('hypothesis')
+  if (hypothesis) {
+    sections.push(
+      <XmlSection key="hypothesis" icon="⬡" label="Hypothesis" color="#5B7A9D">
+        <HypothesisBody text={hypothesis} />
+      </XmlSection>
+    )
+  }
+
+  // 5. Followup questions
+  const followup = extract('followup')
+  if (followup) {
+    sections.push(
+      <XmlSection key="followup" icon="→" label="Follow-up Questions" color="#8E977D">
+        <PlainText text={followup} />
+      </XmlSection>
+    )
+  }
+
+  // If nothing matched (malformed XML), fall back to plain
+  if (sections.length === 0) {
+    return <PlainText text={text} />
+  }
+
+  return <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>{sections}</div>
+}
+
+// ── Renders plain text: **bold**, newlines, numbered lists ───────────────────
+function PlainText({ text }) {
+  if (!text) return null
+  const lines = text.split('\n')
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+      {lines.map((line, i) => {
+        if (!line.trim()) return <div key={i} style={{ height: '0.4rem' }} />
+        // Bold markdown
+        const parts = line.split(/\*\*(.*?)\*\*/g)
+        return (
+          <div key={i} style={{ lineHeight: 1.75 }}>
+            {parts.map((part, j) =>
+              j % 2 === 1
+                ? <strong key={j}>{part}</strong>
+                : part
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Renders the <explanation> block, splitting on **Bold Headings** ──────────
+function ExplanationBody({ text }) {
+  if (!text) return null
+
+  // Split on **Heading** that appears at the start of a line
+  const chunks = text.split(/(?=\n\*\*[^*]+\*\*)/)
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      {chunks.map((chunk, i) => {
+        const headingMatch = chunk.match(/^\n?\*\*([^*]+)\*\*\n?(.*)$/s)
+        if (headingMatch) {
+          return (
+            <div key={i}>
+              <div style={xmlCss.sectionHeading}>{headingMatch[1]}</div>
+              <PlainText text={headingMatch[2].trim()} />
+            </div>
+          )
+        }
+        return <PlainText key={i} text={chunk.trim()} />
+      })}
+    </div>
+  )
+}
+
+// ── Renders the <hypothesis> block — parses H0/H1/Expected Effect etc. ───────
+function HypothesisBody({ text }) {
+  if (!text) return null
+
+  const fields = [
+    'H0 (Null Hypothesis)',
+    'H1 (Alternative Hypothesis)',
+    'Expected Effect',
+    'Scientific Rationale',
+    'Measurable Outcome',
+    'Confounding Variables',
+    'Statistical Test',
+  ]
+
+  const rows = []
+  let remaining = text
+
+  fields.forEach((field) => {
+    const re = new RegExp(`\\*\\*${field.replace(/[()]/g, '\\$&')}:\\*\\*\\s*([\\s\\S]*?)(?=\\*\\*|$)`, 'i')
+    const m = remaining.match(re)
+    if (m) {
+      rows.push({ label: field, value: m[1].trim() })
+    }
+  })
+
+  if (rows.length === 0) {
+    // Fallback: plain text
+    return <PlainText text={text} />
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+      {rows.map(({ label, value }) => (
+        <div key={label} style={xmlCss.hypRow}>
+          <div style={xmlCss.hypLabel}>{label}</div>
+          <div style={xmlCss.hypValue}>{value}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ── Wrapper for each named XML section ───────────────────────────────────────
+function XmlSection({ icon, label, color, accent, children }) {
+  const [open, setOpen] = useState(true)
+  return (
+    <div style={{
+      border: `1px solid ${color}22`,
+      borderRadius: 10,
+      overflow: 'hidden',
+      background: accent ? `${color}06` : 'transparent',
+    }}>
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', gap: '0.5rem',
+          padding: '0.5rem 0.75rem',
+          background: `${color}10`,
+          cursor: 'pointer',
+          userSelect: 'none',
+        }}
+        onClick={() => setOpen(v => !v)}
+      >
+        <span style={{ fontSize: '0.7rem', color }}>{icon}</span>
+        <span style={{
+          fontFamily: 'var(--font-mono)', fontSize: '0.65rem',
+          fontWeight: 700, letterSpacing: '0.12em',
+          textTransform: 'uppercase', color,
+          flex: 1,
+        }}>{label}</span>
+        <span style={{ fontSize: '0.6rem', color, opacity: 0.6 }}>{open ? '▲' : '▼'}</span>
+      </div>
+      {open && (
+        <div style={{ padding: '0.85rem 1rem', fontSize: '0.91rem', lineHeight: 1.78, color: 'var(--ink)' }}>
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Styles for XML rendering ─────────────────────────────────────────────────
+const xmlCss = {
+  enthusiasm: {
+    display: 'flex', gap: '0.5rem', alignItems: 'flex-start',
+    padding: '0.6rem 0.85rem',
+    background: 'rgba(107,143,113,0.08)',
+    borderLeft: '3px solid #6B8F71',
+    borderRadius: '0 8px 8px 0',
+    fontStyle: 'italic',
+    color: 'var(--bark-dark)',
+    fontSize: '0.91rem',
+    lineHeight: 1.7,
+  },
+  enthusiasmIcon: {
+    color: '#6B8F71', fontSize: '0.8rem', flexShrink: 0, marginTop: 3,
+  },
+  sectionHeading: {
+    fontFamily: 'var(--font-sans)',
+    fontWeight: 700,
+    fontSize: '0.85rem',
+    color: 'var(--ink)',
+    marginBottom: '0.35rem',
+    paddingBottom: '0.25rem',
+    borderBottom: '1px solid rgba(138,118,80,0.15)',
+  },
+  hypRow: {
+    display: 'grid',
+    gridTemplateColumns: '160px 1fr',
+    gap: '0.5rem',
+    padding: '0.45rem 0',
+    borderBottom: '1px solid rgba(138,118,80,0.08)',
+  },
+  hypLabel: {
+    fontFamily: 'var(--font-mono)',
+    fontSize: '0.63rem',
+    fontWeight: 700,
+    color: '#5B7A9D',
+    letterSpacing: '0.04em',
+    paddingTop: 2,
+  },
+  hypValue: {
+    fontSize: '0.87rem',
+    color: 'var(--ink)',
+    lineHeight: 1.65,
+  },
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function ChatView({ chatId, domain, onBack }) {
   const { user, authFetch } = useAuth()
   const { history, appendMessage, updateChat, toggleBookmark } = useChat()
@@ -31,13 +292,11 @@ export default function ChatView({ chatId, domain, onBack }) {
   const [chatTitle,   setChatTitle]   = useState(chat?.title || '')
 
   // Right panel
-  const [panelTab,    setPanelTab]    = useState(null)          // null = closed
+  const [panelTab,    setPanelTab]    = useState(null)
   const [papers,      setPapers]      = useState([])
   const [papersLoading, setPapersLoading] = useState(false)
   const [activePaper, setActivePaper] = useState(null)
 
-  // Per-message meta (trace, params, methods, validation, confidence)
-  // Stored as { [msgId]: {...} }
   const [msgMeta,  setMsgMeta]  = useState({})
 
   // Causal analysis
@@ -48,7 +307,6 @@ export default function ChatView({ chatId, domain, onBack }) {
   const [optData,    setOptData]    = useState(null)
   const [optPolling, setOptPolling] = useState(false)
 
-  // Feedback state  { [msgId]: 'good'|'bad' }
   const [feedback, setFeedback] = useState({})
 
   const sessionIdRef = useRef(chatId)
@@ -126,7 +384,6 @@ export default function ChatView({ chatId, domain, onBack }) {
       setMessages(prev => [...prev, aiMsg])
       appendMessage(chatId, aiMsg)
 
-      // Store rich meta for this message
       setMsgMeta(prev => ({
         ...prev,
         [aiMsgId]: {
@@ -141,13 +398,10 @@ export default function ChatView({ chatId, domain, onBack }) {
         }
       }))
 
-      // Update session ref so subsequent calls use same session
       sessionIdRef.current = data.session_id || sessionIdRef.current
 
-      // Auto-start polling optimization if backend launched it
       if (data.optimization_note) startOptimizationPolling(data.session_id)
 
-      // Auto-fetch arXiv papers for this query
       fetchPapers(text)
 
     } catch(e) {
@@ -174,7 +428,7 @@ export default function ChatView({ chatId, domain, onBack }) {
       const res = await fetch(`${API}/arxiv`, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query, max_papers: 80 }),
       })
       const data = await res.json()
       setPapers(data.links || [])
@@ -277,10 +531,8 @@ export default function ChatView({ chatId, domain, onBack }) {
     } catch(e) { console.warn('Feedback failed:', e) }
   }
 
-  // ── Trace lookup: last message that has trace data ───────────────────────────
   const lastMetaEntry = Object.values(msgMeta).filter(m=>m.trace?.length>0).slice(-1)[0] || null
 
-  // ── Panel open/close ─────────────────────────────────────────────────────────
   const togglePanel = (tab) => setPanelTab(prev => prev===tab ? null : tab)
 
   const exportChat = () => {
@@ -378,7 +630,6 @@ export default function ChatView({ chatId, domain, onBack }) {
           {panelOpen && (
             <div style={css.panelInner}>
 
-              {/* Panel tab bar */}
               <div style={css.panelTabBar}>
                 {PANEL_TABS.map(t => (
                   <button key={t} style={css.panelTabBtn(panelTab===t)} onClick={()=>setPanelTab(t)}>
@@ -392,7 +643,6 @@ export default function ChatView({ chatId, domain, onBack }) {
               </div>
 
               <div style={css.panelScroll}>
-                {/* ── PAPERS TAB ── */}
                 {panelTab==='papers' && (
                   <PapersPanel
                     papers={papers}
@@ -402,18 +652,12 @@ export default function ChatView({ chatId, domain, onBack }) {
                     onBack={()=>setActivePaper(null)}
                   />
                 )}
-
-                {/* ── TRACE TAB ── */}
                 {panelTab==='trace' && (
                   <TracePanel meta={lastMetaEntry} />
                 )}
-
-                {/* ── CAUSAL TAB ── */}
                 {panelTab==='causal' && (
                   <CausalPanel data={causalData} loading={causalLoading} />
                 )}
-
-                {/* ── OPTIMISATION TAB ── */}
                 {panelTab==='optimization' && (
                   <OptimizationPanel data={optData} polling={optPolling} />
                 )}
@@ -437,40 +681,53 @@ export default function ChatView({ chatId, domain, onBack }) {
 
 // ─── Message ─────────────────────────────────────────────────────────────────
 function Message({ msg, initials, modelName, meta, feedbackState, onFeedback, onShowTrace }) {
-  const isUser = msg.role==='user'
+  const isUser = msg.role === 'user'
   const [showMeta, setShowMeta] = useState(false)
-  const formatted = (msg.text||'')
-    .replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>')
-    .replace(/\n/g,'<br/>')
+
+  // For user messages: plain inline HTML (no XML tags)
+  // For AI messages: use the XML-aware parser
+  const userFormatted = isUser
+    ? (msg.text || '')
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\n/g, '<br/>')
+    : null
 
   return (
     <div style={{...css.msg, flexDirection:isUser?'row-reverse':'row'}}>
-      <div style={{...css.avatar,
+      <div style={{
+        ...css.avatar,
         background: isUser ? 'linear-gradient(135deg,var(--bark),var(--sage))' : 'var(--parchment)',
         border: isUser ? 'none' : '1px solid var(--border)',
         color: isUser ? 'var(--parchment-light)' : 'var(--bark)',
       }}>
         {isUser ? initials.toUpperCase() : 'IX'}
       </div>
+
       <div style={{maxWidth:'72%'}}>
-        <div style={{...css.bubble,
+        <div style={{
+          ...css.bubble,
           background: isUser ? 'var(--bark-deeper)' : 'white',
           color: isUser ? 'var(--parchment-light)' : 'var(--ink)',
           border: isUser ? 'none' : '1px solid var(--border)',
           borderBottomRightRadius: isUser ? 4 : 14,
           borderBottomLeftRadius:  isUser ? 14 : 4,
+          // AI bubbles need a bit more padding for the structured sections
+          padding: isUser ? '0.95rem 1.1rem' : '1rem 1.1rem',
         }}>
-          <span dangerouslySetInnerHTML={{__html:formatted}}/>
+          {isUser
+            ? <span dangerouslySetInnerHTML={{ __html: userFormatted }} />
+            : parseXmlResponse(msg.text)
+          }
 
           {/* Sources */}
-          {msg.sources?.length>0 && (
+          {msg.sources?.length > 0 && (
             <div style={css.sources}>
-              {msg.sources.map((s,i)=><span key={i} style={css.sourceChip}>📄 {s}</span>)}
+              {msg.sources.map((s,i) => <span key={i} style={css.sourceChip}>📄 {s}</span>)}
             </div>
           )}
 
           {/* Confidence bar */}
-          {msg.confidence!=null && !isUser && (
+          {msg.confidence != null && !isUser && (
             <div style={css.confBar}>
               <span>Confidence</span>
               <div style={{flex:1,height:3,background:'var(--border)',borderRadius:2,overflow:'hidden'}}>
@@ -498,7 +755,6 @@ function Message({ msg, initials, modelName, meta, feedbackState, onFeedback, on
             </>
           )}
 
-          {/* Feedback */}
           {!isUser && (
             <div style={{display:'flex',gap:3,marginLeft:'auto'}}>
               <button style={{...css.fbBtn, color: feedbackState==='good'?'var(--sage)':undefined}} onClick={()=>onFeedback('good')}>👍</button>
@@ -556,25 +812,21 @@ function TypingIndicator() {
 
 // ─── Papers panel ────────────────────────────────────────────────────────────
 function PapersPanel({ papers, loading, activePaper, onSelect, onBack }) {
-  // Side-by-side layout when a paper is selected
   if (activePaper) {
     return (
       <div style={{ display:'flex', flexDirection:'column', height:'100%' }}>
-        {/* Header */}
         <div style={{ display:'flex', alignItems:'center', gap:'0.5rem', padding:'0.5rem 0 0.75rem', borderBottom:'1px solid var(--border)', marginBottom:'0.75rem', flexShrink:0 }}>
           <button style={css.panelClose} onClick={onBack}>← Back to list</button>
           <span style={{ fontSize:'0.75rem', fontWeight:600, color:'var(--ink)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{activePaper.title}</span>
         </div>
-        {/* Split pane */}
         <div style={{ display:'flex', gap:'0.75rem', flex:1, overflow:'hidden', minHeight:0 }}>
-          {/* Paper list (narrow) */}
           <div style={{ width:200, flexShrink:0, overflowY:'auto', display:'flex', flexDirection:'column', gap:'0.5rem', paddingRight:'0.5rem', borderRight:'1px solid var(--border)' }}>
             <div style={{ fontFamily:'var(--font-mono)', fontSize:'0.6rem', letterSpacing:'0.12em', textTransform:'uppercase', color:'var(--muted)', marginBottom:'0.25rem' }}>All Papers</div>
             {papers.map((p, i) => (
               <div
                 key={i}
                 style={{
-                  padding:'0.5rem 0.6rem', borderRadius:7, cursor:'none', transition:'all .18s',
+                  padding:'0.5rem 0.6rem', borderRadius:7, cursor:'pointer', transition:'all .18s',
                   border:`1px solid ${activePaper===p ? 'var(--bark)' : 'var(--border)'}`,
                   background: activePaper===p ? 'rgba(138,118,80,.08)' : 'var(--parchment-light)',
                 }}
@@ -586,9 +838,7 @@ function PapersPanel({ papers, loading, activePaper, onSelect, onBack }) {
               </div>
             ))}
           </div>
-          {/* PDF viewer (wide) */}
           <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
-            {/* Paper meta */}
             <div style={{ marginBottom:'0.6rem', flexShrink:0 }}>
               {activePaper.authors && <div style={{ fontSize:'0.68rem', color:'var(--muted)', marginBottom:'0.2rem' }}>{activePaper.authors}</div>}
               {activePaper.summary && <div style={{ fontSize:'0.7rem', color:'var(--ink-mid)', lineHeight:1.55, marginBottom:'0.5rem' }}>{activePaper.summary}</div>}
@@ -596,7 +846,6 @@ function PapersPanel({ papers, loading, activePaper, onSelect, onBack }) {
                 {activePaper.url && <a href={activePaper.url} target="_blank" rel="noreferrer" style={css.paperBtn}>Open on arXiv ↗</a>}
               </div>
             </div>
-            {/* iframe */}
             {activePaper.pdfUrl ? (
               <iframe
                 src={activePaper.pdfUrl}
@@ -651,7 +900,6 @@ function TracePanel({ meta }) {
 
   return (
     <div>
-      {/* Summary row */}
       <div style={css.panelSectionTitle}>Reasoning Trace</div>
       <div style={css.traceMetaRow}>
         {intent      && <MetaChip label="Intent"   value={intent}/>}
@@ -661,7 +909,6 @@ function TracePanel({ meta }) {
         <MetaChip label="Pipeline" value={usedPipeline ? 'Full' : 'Fast'}/>
       </div>
 
-      {/* Trace steps */}
       {trace.length>0 ? (
         <>
           <div style={{fontFamily:'var(--font-mono)',fontSize:'0.58rem',letterSpacing:'0.12em',textTransform:'uppercase',color:'var(--muted-light)',marginBottom:'0.5rem'}}>
@@ -675,7 +922,6 @@ function TracePanel({ meta }) {
         <Empty icon="📋" text="No detailed trace available for this response (fast path used)"/>
       )}
 
-      {/* Extracted parameters */}
       {Object.keys(parameters).length>0 && (
         <>
           <div style={{...css.panelSectionTitle,marginTop:'1.25rem'}}>Extracted Parameters</div>
@@ -759,7 +1005,6 @@ function CausalPanel({ data, loading }) {
         </div>
       )}
 
-      {/* Causal graph / effects */}
       {cr.causal_effects && Object.keys(cr.causal_effects).length>0 && (
         <>
           <div style={css.subHeading}>Causal Effects</div>
@@ -772,7 +1017,6 @@ function CausalPanel({ data, loading }) {
         </>
       )}
 
-      {/* DoWhy / stats */}
       {cr.statistics && (
         <>
           <div style={css.subHeading}>Statistics</div>
@@ -780,7 +1024,6 @@ function CausalPanel({ data, loading }) {
         </>
       )}
 
-      {/* Raw result fallback */}
       {!cr.causal_effects && !cr.statistics && Object.keys(cr).length>0 && (
         <>
           <div style={css.subHeading}>Analysis Result</div>
@@ -788,7 +1031,6 @@ function CausalPanel({ data, loading }) {
         </>
       )}
 
-      {/* arXiv links from causal */}
       {links.length>0 && (
         <>
           <div style={{...css.subHeading,marginTop:'1.25rem'}}>Related Papers</div>
@@ -814,7 +1056,6 @@ function OptimizationPanel({ data, polling }) {
   const status = data.status || 'unknown'
   const result = data.result || {}
   const optimal = result.optimal_parameters || result.best_parameters || {}
-
   const statusColor = status==='completed'?'#6B8F71':status==='failed'||status==='timeout'?'#B5614A':'var(--bark)'
 
   return (
@@ -861,7 +1102,6 @@ function OptimizationPanel({ data, polling }) {
         </div>
       )}
 
-      {/* Full result for advanced users */}
       {Object.keys(result).length>0 && (
         <>
           <div style={{...css.subHeading,marginTop:'1rem'}}>Full Result</div>
@@ -904,11 +1144,11 @@ function Empty({icon,text}) {
 const css = {
   wrap: { flex:1, display:'flex', flexDirection:'column', overflow:'hidden', background:'var(--parchment-light)' },
   topbar: { display:'flex', alignItems:'center', padding:'0.75rem 1.4rem', borderBottom:'1px solid var(--border)', background:'rgba(255,255,255,.6)', backdropFilter:'blur(12px)', gap:'0.6rem', flexShrink:0, flexWrap:'wrap' },
-  backBtn: { background:'none', border:'none', cursor:'none', color:'var(--muted)', fontSize:'0.88rem', display:'flex', alignItems:'center', gap:'0.4rem', padding:'0.3rem 0.6rem', borderRadius:6, transition:'all .2s', fontFamily:'var(--font-sans)' },
+  backBtn: { background:'none', border:'none', cursor:'pointer', color:'var(--muted)', fontSize:'0.88rem', display:'flex', alignItems:'center', gap:'0.4rem', padding:'0.3rem 0.6rem', borderRadius:6, transition:'all .2s', fontFamily:'var(--font-sans)' },
   domainBadge: { display:'flex', alignItems:'center', gap:'0.4rem', background:'var(--parchment)', border:'1px solid var(--border)', borderRadius:20, padding:'0.28rem 0.7rem', fontSize:'0.76rem', fontWeight:600, color:'var(--bark-dark)', flexShrink:0 },
   titleInput: { flex:1, background:'none', border:'none', fontFamily:'var(--font-sans)', fontSize:'0.92rem', fontWeight:600, color:'var(--ink)', outline:'none', minWidth:80 },
   topbarActions: { display:'flex', alignItems:'center', gap:'0.35rem', flexWrap:'wrap' },
-  topBtn: (active) => ({ background: active?'rgba(138,118,80,.1)':'none', border:`1px solid ${active?'var(--bark)':'var(--border)'}`, borderRadius:7, padding:'0.32rem 0.7rem', fontSize:'0.74rem', color:active?'var(--bark)':'var(--muted)', cursor:'none', transition:'all .2s', fontFamily:'var(--font-sans)', fontWeight:500, whiteSpace:'nowrap' }),
+  topBtn: (active) => ({ background: active?'rgba(138,118,80,.1)':'none', border:`1px solid ${active?'var(--bark)':'var(--border)'}`, borderRadius:7, padding:'0.32rem 0.7rem', fontSize:'0.74rem', color:active?'var(--bark)':'var(--muted)', cursor:'pointer', transition:'all .2s', fontFamily:'var(--font-sans)', fontWeight:500, whiteSpace:'nowrap' }),
 
   body: { flex:1, display:'flex', overflow:'hidden' },
   messagesPane: { flex:1, display:'flex', flexDirection:'column', overflow:'hidden', minWidth:0 },
@@ -922,8 +1162,8 @@ const css = {
   sourceChip: { background:'var(--parchment)', border:'1px solid var(--border)', borderRadius:6, padding:'0.28rem 0.6rem', fontSize:'0.7rem', color:'var(--bark-dark)' },
   confBar: { display:'flex', alignItems:'center', gap:'0.5rem', marginTop:'0.6rem', fontFamily:'var(--font-mono)', fontSize:'0.65rem', color:'var(--muted)' },
   msgMeta: { fontFamily:'var(--font-mono)', fontSize:'0.62rem', color:'var(--muted-light)', marginTop:'0.35rem', display:'flex', alignItems:'center', gap:'0.4rem', flexWrap:'wrap' },
-  metaBtn: { background:'none', border:'none', cursor:'none', fontFamily:'var(--font-mono)', fontSize:'0.62rem', color:'var(--bark)', padding:0 },
-  fbBtn: { background:'none', border:'none', cursor:'none', fontSize:'0.82rem', padding:'1px 3px', borderRadius:4, transition:'all .15s', opacity:.5 },
+  metaBtn: { background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-mono)', fontSize:'0.62rem', color:'var(--bark)', padding:0 },
+  fbBtn: { background:'none', border:'none', cursor:'pointer', fontSize:'0.82rem', padding:'1px 3px', borderRadius:4, transition:'all .15s', opacity:.5 },
   inlineTrace: { marginTop:'0.4rem', background:'rgba(138,118,80,.04)', border:'1px solid rgba(138,118,80,.1)', borderRadius:8, padding:'0.5rem', display:'flex', flexDirection:'column', gap:2 },
   traceStepMini: { display:'flex', alignItems:'center', gap:'0.5rem', padding:'0.25rem 0' },
   traceNum: { width:18, height:18, borderRadius:'50%', background:'rgba(138,118,80,.15)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'0.55rem', fontFamily:'var(--font-mono)', color:'var(--bark)', flexShrink:0 },
@@ -931,41 +1171,35 @@ const css = {
   inputArea: { padding:'0.9rem 2rem 1.1rem', background:'rgba(255,255,255,.6)', backdropFilter:'blur(12px)', borderTop:'1px solid var(--border)', flexShrink:0 },
   inputWrap: { background:'white', border:'1.5px solid var(--border)', borderRadius:14, display:'flex', alignItems:'flex-end', gap:'0.5rem', padding:'0.7rem 0.7rem 0.7rem 1.1rem', transition:'all .2s' },
   textarea: { flex:1, border:'none', outline:'none', fontFamily:'var(--font-sans)', fontSize:'0.92rem', color:'var(--ink)', background:'transparent', resize:'none', maxHeight:120, lineHeight:1.65 },
-  sendBtn: { width:36, height:36, background:'var(--bark-deeper)', border:'none', borderRadius:8, color:'var(--parchment-light)', fontSize:'0.88rem', cursor:'none', transition:'all .2s', display:'flex', alignItems:'center', justifyContent:'center' },
+  sendBtn: { width:36, height:36, background:'var(--bark-deeper)', border:'none', borderRadius:8, color:'var(--parchment-light)', fontSize:'0.88rem', cursor:'pointer', transition:'all .2s', display:'flex', alignItems:'center', justifyContent:'center' },
   inputFooter: { marginTop:'0.4rem', display:'flex', alignItems:'center', gap:'1rem', fontFamily:'var(--font-mono)', fontSize:'0.63rem', color:'var(--muted-light)' },
 
-  // Right panel
   panel: { borderLeft:'1px solid var(--border)', overflow:'hidden', transition:'width .32s cubic-bezier(.4,0,.2,1)', flexShrink:0, background:'white' },
   panelInner: { width:'100%', height:'100%', display:'flex', flexDirection:'column', overflow:'hidden' },
   panelTabBar: { display:'flex', gap:2, padding:'0.5rem 0.75rem 0', borderBottom:'1px solid var(--border)', background:'var(--parchment)', flexShrink:0 },
-  panelTabBtn: (active) => ({ flex:1, padding:'0.42rem 0', border:'none', borderRadius:'6px 6px 0 0', fontFamily:'var(--font-sans)', fontSize:'0.72rem', fontWeight:600, cursor:'none', transition:'all .2s', background:active?'white':'transparent', color:active?'var(--ink)':'var(--muted)', borderBottom:active?'none':`1px solid var(--border)` }),
-  panelClose: { background:'none', border:'none', cursor:'none', color:'var(--muted)', fontSize:'0.85rem', padding:'3px 6px', borderRadius:5, transition:'all .2s', fontFamily:'var(--font-sans)', marginLeft:'auto' },
+  panelTabBtn: (active) => ({ flex:1, padding:'0.42rem 0', border:'none', borderRadius:'6px 6px 0 0', fontFamily:'var(--font-sans)', fontSize:'0.72rem', fontWeight:600, cursor:'pointer', transition:'all .2s', background:active?'white':'transparent', color:active?'var(--ink)':'var(--muted)', borderBottom:active?'none':`1px solid var(--border)` }),
+  panelClose: { background:'none', border:'none', cursor:'pointer', color:'var(--muted)', fontSize:'0.85rem', padding:'3px 6px', borderRadius:5, transition:'all .2s', fontFamily:'var(--font-sans)', marginLeft:'auto' },
   panelScroll: { flex:1, overflowY:'auto', padding:'1rem', scrollbarWidth:'thin', scrollbarColor:'rgba(138,118,80,.2) transparent' },
   panelSectionTitle: { fontFamily:'var(--font-mono)', fontSize:'0.68rem', letterSpacing:'0.15em', textTransform:'uppercase', color:'var(--bark)', marginBottom:'0.75rem', paddingBottom:'0.4rem', borderBottom:'1px solid var(--border)' },
   subHeading: { fontFamily:'var(--font-mono)', fontSize:'0.64rem', letterSpacing:'0.1em', textTransform:'uppercase', color:'var(--muted)', marginBottom:'0.4rem', marginTop:'0.6rem' },
 
-  // Trace
   traceMetaRow: { display:'flex', gap:'0.5rem', flexWrap:'wrap', marginBottom:'1rem' },
   traceStep: { border:'1px solid var(--border)', borderRadius:9, marginBottom:'0.5rem', overflow:'hidden' },
-  traceStepHeader: { display:'flex', alignItems:'center', gap:'0.6rem', padding:'0.65rem 0.75rem', cursor:'none', background:'var(--parchment-light)', transition:'background .15s' },
+  traceStepHeader: { display:'flex', alignItems:'center', gap:'0.6rem', padding:'0.65rem 0.75rem', cursor:'pointer', background:'var(--parchment-light)', transition:'background .15s' },
   traceIdx: { width:24, height:24, borderRadius:'50%', background:'rgba(138,118,80,.15)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'0.65rem', fontFamily:'var(--font-mono)', color:'var(--bark)', fontWeight:700, flexShrink:0 },
   traceBadge: { fontFamily:'var(--font-mono)', fontSize:'0.6rem', padding:'2px 6px', borderRadius:4, background:'rgba(138,118,80,.1)', color:'var(--bark-dark)' },
   traceStepBody: { padding:'0.65rem 0.75rem 0.8rem', borderTop:'1px solid var(--border)', background:'white' },
 
-  // Params
   paramRow: { display:'flex', alignItems:'center', gap:'0.5rem', padding:'0.45rem 0', borderBottom:'1px solid rgba(138,118,80,.07)', flexWrap:'wrap' },
   paramKey: { fontFamily:'var(--font-mono)', fontSize:'0.68rem', color:'var(--muted)', minWidth:110, flexShrink:0 },
   paramVal: { fontFamily:'var(--font-mono)', fontSize:'0.74rem', fontWeight:600, color:'var(--ink-mid)' },
   paramUnit: { fontFamily:'var(--font-mono)', fontSize:'0.63rem', color:'var(--bark)', opacity:.8 },
   paramConf: { fontFamily:'var(--font-mono)', fontSize:'0.6rem', padding:'1px 4px', borderRadius:3, background:'rgba(107,143,113,.12)', color:'#6B8F71', marginLeft:'auto' },
 
-  // Causal
   causalRow: { background:'var(--parchment-light)', border:'1px solid var(--border)', borderRadius:8, padding:'0.65rem', marginBottom:'0.5rem' },
 
-  // Code block
   codeBlock: { fontFamily:'var(--font-mono)', fontSize:'0.65rem', lineHeight:1.65, color:'var(--ink-mid)', background:'rgba(138,118,80,.04)', border:'1px solid rgba(138,118,80,.1)', borderRadius:8, padding:'0.75rem', whiteSpace:'pre-wrap', wordBreak:'break-all', maxHeight:280, overflowY:'auto' },
 
-  // Papers
   paperCard: { background:'var(--parchment-light)', border:'1px solid var(--border)', borderRadius:9, padding:'0.85rem', marginBottom:'0.6rem', transition:'all .2s' },
-  paperBtn: { fontSize:'0.67rem', padding:'4px 10px', borderRadius:4, border:'1px solid var(--border)', background:'white', color:'var(--bark-dark)', cursor:'none', transition:'all .2s', fontFamily:'var(--font-mono)', textDecoration:'none' },
+  paperBtn: { fontSize:'0.67rem', padding:'4px 10px', borderRadius:4, border:'1px solid var(--border)', background:'white', color:'var(--bark-dark)', cursor:'pointer', transition:'all .2s', fontFamily:'var(--font-mono)', textDecoration:'none' },
 }

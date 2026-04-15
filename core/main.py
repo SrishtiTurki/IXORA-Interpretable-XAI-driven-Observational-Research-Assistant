@@ -842,6 +842,11 @@ async def chat(req: ChatRequest, background_tasks: BackgroundTasks):
 
         # ── 4. Update session history (common path) ────────────────────────
         history.append({"role": "assistant", "content": response_text})
+        # Record the very first research query so arXiv results stay pinned to it
+        # across all follow-up turns in this session.
+        if used_full_pipeline and "first_research_query" not in session_state:
+            session_state["first_research_query"] = req.message
+
         session_state.update({
             "history": history[-20:],
             "last_query": req.message,
@@ -1049,12 +1054,47 @@ async def arxiv_search(request: Request):
             detail="Missing or invalid 'query' field. Send something like: {'query': 'yeast biomass pH'}"
         )
 
+    session_id = payload.get("session_id")  # frontend should always pass this
+
     # User-controlled paper count: default 20, capped at 100
     requested = payload.get("max_papers", 20)
     try:
         max_papers = max(1, min(int(requested), 100))
     except (TypeError, ValueError):
         max_papers = 20
+
+    # ── Session-aware query pinning ──────────────────────────────────────────
+    # On follow-up turns the frontend sends the follow-up text as , but
+    # the arXiv papers should always reflect the ORIGINAL research question so
+    # they stay relevant.  We use two layers of stickiness:
+    #   1. If papers were already cached for this session → return them as-is.
+    #   2. Otherwise resolve the canonical research query from session state
+    #      (first_research_query) so the search is anchored to the topic, not
+    #      the follow-up wording.
+    if session_id:
+        session_state = load_session_state(session_id)
+
+        # Layer 1: return cached papers immediately (no new fetch needed)
+        cached_papers = session_state.get("arxiv_papers")
+        if cached_papers:
+            logger.info(
+                f"📚 Returning {len(cached_papers)} cached arXiv papers for session {session_id}"
+            )
+            return {
+                "links": cached_papers,
+                "count": len(cached_papers),
+                "status": "success",
+                "source": "session_cache",
+            }
+
+        # Layer 2: pin query to the first research question in this session
+        first_research_query = session_state.get("first_research_query")
+        if first_research_query:
+            logger.info(
+                f"📌 Pinning arXiv search to original query: '{first_research_query[:80]}...'"
+            )
+            query = first_research_query
+
     logger.info(f"📄 User requested {max_papers} papers for query: '{query.strip()}'")
 
     try:
@@ -1064,34 +1104,46 @@ async def arxiv_search(request: Request):
                 retrieve_arxiv_evidence(query, max_papers=max_papers),
                 timeout=max(30, max_papers * 0.75)  # ~30s min, scales up for larger requests
             )
-            
+
             if papers:
                 logger.info(f"📚 Found {len(papers)} arXiv papers")
+                # Cache papers in session so follow-up calls return the same set
+                if session_id:
+                    session_state = load_session_state(session_id) or {}
+                    session_state["arxiv_papers"] = papers
+                    session_state.setdefault("first_research_query", query.strip())
+                    save_session_state(session_id, session_state)
                 return {
                     "links": papers,
                     "count": len(papers),
                     "status": "success",
-                    "source": "arxiv_api"
+                    "source": "arxiv_api",
                 }
-        
+
         except (asyncio.TimeoutError, Exception) as e:
             logger.warning(f"arXiv API failed: {e}, using fallback")
 
-        
         query = query.strip()
-        
+
         # Use fallback papers
         fallback_papers = _get_fallback_papers(query)
         logger.info(f"📚 Using {len(fallback_papers)} fallback papers")
-        
+
+        # Cache fallback too so follow-ups are stable
+        if session_id:
+            session_state = load_session_state(session_id) or {}
+            session_state["arxiv_papers"] = fallback_papers
+            session_state.setdefault("first_research_query", query)
+            save_session_state(session_id, session_state)
+
         return {
             "links": fallback_papers,
             "count": len(fallback_papers),
             "status": "partial",
             "source": "fallback",
-            "note": "arXiv API unavailable, showing relevant reference papers"
+            "note": "arXiv API unavailable, showing relevant reference papers",
         }
-        
+
     except Exception as e:
         logger.error(f"arXiv endpoint error: {e}")
         return {

@@ -7,7 +7,7 @@
     "celery": "celery -A core.celery_app.app worker --loglevel=info --pool=solo",
     "api": "uvicorn core.main:app --reload --port 8000",
     "dev": "concurrently --kill-others-on-fail \"npm run redis\" \"npm run celery\" \"npm run api\"",
-    "dev:windows": "concurrently --kill-others-on-fail \"cd redis && redis-server.exe\" \"celery -A core.celery_app.app worker --loglevel=info --pool=solo\" \"uvicorn core.main:app --reload --port 8000\""
+    "dev:windows": "concurrently --kill-others-on-fail \"cd redis && redis-server.exe\" \"celery -A core.celery_app.app worker --loglevel=info --pool=solo\" \"uvicorn core.main:app --reload --port 8000\" \"uvicorn core.auth.auth_api:app --reload --port 8001\""
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

@@ -33,3 +33,5 @@ sacremoses
 bcrypt==4.0.1
 passlib[bcrypt]==1.7.4
 firebase-admin
+pydantic[email]
+pyJWT
