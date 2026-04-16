@@ -1,3 +1,5 @@
+# core/intent_router.py - FIXED for CS domain (preserves biomedical functionality)
+
 import json
 import logging
 import asyncio
@@ -43,6 +45,9 @@ CS_STRONG_KEYWORDS = {
     "neural network", "training", "backpropagation", "gradient descent",
     "overfitting", "regularization", "cross-validation", "loss function",
     "optimizer", "adversarial training", "malware detection", "model robustness",
+    "random forest", "xgboost", "ensemble", "bagging", "boosting", "stacking",
+    "precision", "recall", "f1", "f1-score", "accuracy", "roc", "auc",
+    "hyperparameter", "fine-tuning", "inference",
     
     # Systems
     "operating system", "kernel", "thread", "process", "memory management",
@@ -50,59 +55,161 @@ CS_STRONG_KEYWORDS = {
     
     # Security/crypto
     "encryption", "decryption", "hash function", "cryptography", "malware",
-    "vulnerability", "exploit", "security analysis", "attack surface"
+    "vulnerability", "exploit", "security analysis", "attack surface",
+    
+    # Data/ML operations
+    "dataset", "resampling", "smote", "undersampling", "oversampling",
+    "feature selection", "dimensionality reduction", "pca"
 }
+
+# ========== RESEARCH QUERY DETECTION (NEW) ==========
+# These patterns indicate a research query that needs full pipeline
+RESEARCH_QUERY_PATTERNS = [
+    # Performance improvement patterns
+    r"improved \w+ from [\d\.]+ to [\d\.]+",
+    r"increased \w+ from \d+ to \d+",
+    r"boosted \w+ by [\d\.]+%",
+    r"reduced \w+ from [\d\.]+ to [\d\.]+",
+    r"decreased \w+ by [\d\.]+%",
+    r"[\d\.]+% (improvement|increase|gain|reduction|decrease)",
+    
+    # Comparison patterns
+    r"compare[s]? .+ (with|to|against)",
+    r"benchmark",
+    r"evaluat(e|ing|ion)",
+    
+    # Parameter/optimization patterns
+    r"parameter[s]? (optimization|tuning|selection)",
+    r"hyperparameter",
+    r"cross-?validation",
+    
+    # Experimental patterns
+    r"experiment",
+    r"analysis of",
+    r"effect of .+ on",
+]
+
+CASUAL_CHAT_PATTERNS = [
+    r"^(hi|hello|hey|greetings)[\s!]*$",
+    r"^(good morning|good afternoon|good evening)[\s!]*$",
+    r"^(thanks|thank you|ty)[\s!]*$",
+    r"^how are you[\s?]*$",
+    r"^what('s| is) up[\s?]*$",
+    r"^bye|goodbye|see you[\s!]*$",
+]
 
 # ========== FALLBACK CLASSIFICATION (KEYWORD-BASED) ==========
 
-def classify_by_keywords(query: str, forced_domain: Optional[str] = None) -> Tuple[str, float]:
+def classify_by_keywords(query: str, forced_domain: Optional[str] = None) -> Tuple[str, float, bool]:
     """
     Fallback classification using keyword matching.
-    Returns: (domain, confidence)
+    Returns: (domain, confidence, is_research)
     """
     query_lower = query.lower()
     
+    # FIRST: Check if this is a research query (needs full pipeline)
+    is_research = False
+    research_score = 0
+    
+    # Check research patterns
+    for pattern in RESEARCH_QUERY_PATTERNS:
+        if re.search(pattern, query_lower):
+            research_score += 25
+            logger.debug(f"Research pattern matched: {pattern}")
+    
+    # Check for CS research keywords
+    cs_research_keywords = [
+        "random forest", "xgboost", "ensemble", "bagging", "boosting",
+        "precision", "recall", "f1", "accuracy", "roc", "auc",
+        "hyperparameter", "cross-validation", "training", "inference",
+        "dataset", "resampling", "feature", "model stability"
+    ]
+    for kw in cs_research_keywords:
+        if kw in query_lower:
+            research_score += 10
+    
+    # Check for numbers + metrics (strong indicator of research)
+    if re.search(r"\d+\.?\d*%", query_lower):
+        research_score += 15
+    if re.search(r"from \d+ to \d+", query_lower):
+        research_score += 20
+    
+    # Check query length (longer queries are more likely research)
+    word_count = len(query.split())
+    if word_count > 12:
+        research_score += 10
+    if word_count > 20:
+        research_score += 10
+    
+    is_research = research_score >= 25
+    
+    # Check for casual chat (overrides research if clear)
+    for pattern in CASUAL_CHAT_PATTERNS:
+        if re.match(pattern, query_lower, re.IGNORECASE):
+            return "casual_chat", 0.9, False
+    
+    # Short greetings
+    if word_count <= 3 and query_lower in ["hi", "hello", "hey", "thanks", "bye"]:
+        return "casual_chat", 0.95, False
+    
     # If domain is forced, check for strong violations
     if forced_domain == "biomed":
-        cs_score = sum(1 for kw in CS_STRONG_KEYWORDS if kw in query_lower)
-        biomed_score = sum(1 for kw in BIOMED_STRONG_KEYWORDS if kw in query_lower)
+        cs_score = sum(2 for kw in CS_STRONG_KEYWORDS if kw in query_lower)
+        biomed_score = sum(2 for kw in BIOMED_STRONG_KEYWORDS if kw in query_lower)
+        
+        # Also check for research indicators in CS context
+        if is_research and cs_score >= 2:
+            # This is a CS research query - not out of domain, but needs CS pipeline
+            return "cs", 0.85, True
         
         # If CS keywords dominate, it's out-of-domain
-        if cs_score >= 3 and cs_score > biomed_score * 2:
-            return "out_of_domain_cs", 0.9
+        if cs_score >= 6 and cs_score > biomed_score * 2:
+            return "out_of_domain_cs", 0.9, False
         
         # Check for specific CS patterns
-        if any(pattern in query_lower for pattern in [
-            "adversarial", "malware", "algorithm", "complexity", 
-            "neural network training", "model robustness"
-        ]):
-            return "out_of_domain_cs", 0.85
+        cs_patterns = ["adversarial", "malware", "algorithm", "complexity", 
+                       "neural network training", "model robustness", "random forest",
+                       "ensemble", "precision", "recall", "f1"]
+        if any(pattern in query_lower for pattern in cs_patterns):
+            if is_research:
+                return "cs", 0.85, True
+            return "out_of_domain_cs", 0.85, False
     
     elif forced_domain == "cs":
-        biomed_score = sum(1 for kw in BIOMED_STRONG_KEYWORDS if kw in query_lower)
-        cs_score = sum(1 for kw in CS_STRONG_KEYWORDS if kw in query_lower)
+        biomed_score = sum(2 for kw in BIOMED_STRONG_KEYWORDS if kw in query_lower)
+        cs_score = sum(2 for kw in CS_STRONG_KEYWORDS if kw in query_lower)
         
         # If biomed keywords dominate, it's out-of-domain
-        if biomed_score >= 3 and biomed_score > cs_score * 2:
-            return "out_of_domain_biomed", 0.9
+        if biomed_score >= 6 and biomed_score > cs_score * 2:
+            return "out_of_domain_biomed", 0.9, False
         
         # Check for specific biomed patterns
-        if any(pattern in query_lower for pattern in [
-            "ph", "cell culture", "enzyme", "protein expression",
-            "clinical trial", "drug dosage"
-        ]):
-            return "out_of_domain_biomed", 0.85
+        biomed_patterns = ["ph", "cell culture", "enzyme", "protein expression",
+                           "clinical trial", "drug dosage"]
+        if any(pattern in query_lower for pattern in biomed_patterns):
+            return "out_of_domain_biomed", 0.85, False
     
     # No forced domain or within domain - classify normally
     biomed_score = sum(1 for kw in BIOMED_STRONG_KEYWORDS if kw in query_lower)
     cs_score = sum(1 for kw in CS_STRONG_KEYWORDS if kw in query_lower)
     
+    # Research query takes precedence
+    if is_research:
+        if cs_score >= 2:
+            return "cs", 0.8, True
+        elif biomed_score >= 2:
+            return "biomed", 0.8, True
+        else:
+            # Research query but unclear domain - use forced or default to cs
+            return forced_domain if forced_domain in ["cs", "biomed"] else "cs", 0.7, True
+    
+    # Non-research classification
     if biomed_score > cs_score and biomed_score >= 2:
-        return "biomed", 0.7
+        return "biomed", 0.7, False
     elif cs_score > biomed_score and cs_score >= 2:
-        return "cs", 0.7
+        return "cs", 0.7, False
     else:
-        return "casual_chat", 0.5
+        return "casual_chat", 0.5, False
 
 
 # ========== LLM-BASED CLASSIFICATION ==========
@@ -115,31 +222,28 @@ def build_classification_prompt(query: str, forced_domain: Optional[str] = None)
 Query: "{query}"
 
 Categories:
-1. "research_planning" - User wants to design an experiment or research study
-2. "parameter_extraction" - Query mentions specific experimental parameters (pH, temp, concentration, etc.)
-3. "explanation" - User wants to understand a concept or mechanism
-4. "casual_chat" - General conversation, greetings, or unclear intent
+1. "research_query" - User asks about experimental results, parameter optimization, performance metrics, or wants to design a study/experiment
+2. "explanation" - User wants to understand a concept, mechanism, or how something works
+3. "casual_chat" - General conversation, greetings, thanks, or unclear intent
 """
     
     if forced_domain == "biomed":
-        base_prompt += """5. "out_of_domain_cs" - Query is about computer science (algorithms, ML training, malware, complexity theory, etc.)
+        base_prompt += """4. "out_of_domain_cs" - Query is about computer science (algorithms, ML training, malware, complexity theory, random forests, precision/recall, F1 scores, etc.)
 
-IMPORTANT: If the query is about:
-- Machine learning algorithms or training
-- Adversarial models or malware detection
-- Algorithm complexity or data structures
-- Computer systems or programming
-Then classify as "out_of_domain_cs"
+IMPORTANT RULES:
+- If the query mentions performance metrics (accuracy, precision, recall, F1, ROC, AUC) → "research_query"
+- If the query mentions model names (Random Forest, XGBoost, Neural Network, Ensemble) → "research_query"  
+- If the query mentions changes in numbers (improved from X to Y, increased by Z%) → "research_query"
+- If query is about algorithms, data structures, complexity, systems → "out_of_domain_cs"
 """
     elif forced_domain == "cs":
-        base_prompt += """5. "out_of_domain_biomed" - Query is about biology/medicine (cell culture, pH, enzymes, clinical trials, etc.)
+        base_prompt += """4. "out_of_domain_biomed" - Query is about biology/medicine (cell culture, pH, enzymes, clinical trials, drug dosages, etc.)
 
-IMPORTANT: If the query is about:
-- Biological experiments or wet-lab work
-- Cell cultures, enzymes, or proteins
-- Drug dosages or clinical trials
-- pH, temperature, or other lab conditions
-Then classify as "out_of_domain_biomed"
+IMPORTANT RULES:
+- If the query mentions CS metrics (accuracy, precision, recall, F1, runtime, complexity) → "research_query"
+- If the query mentions algorithms, models, training, inference → "research_query"
+- If the query mentions parameter changes or improvements → "research_query"
+- If query is about biological experiments, wet-lab protocols, clinical research → "out_of_domain_biomed"
 """
     
     base_prompt += """
@@ -178,13 +282,16 @@ async def classify_with_qwen(query: str, forced_domain: Optional[str] = None) ->
             intent = result.get("intent", "casual_chat")
             confidence = float(result.get("confidence", 0.5))
             
-            # Determine if pipeline is needed
-            needs_pipeline = intent in ["research_planning", "parameter_extraction"]
+            # Determine if pipeline is needed - FIXED: research_query needs pipeline
+            needs_pipeline = intent in ["research_query", "explanation"]
+            
+            # For explanation, sometimes we still want pipeline for depth
+            if intent == "explanation" and len(query.split()) > 10:
+                needs_pipeline = True
             
             # Map intent to task
             task_map = {
-                "research_planning": "experimental_design",
-                "parameter_extraction": "parameter_analysis",
+                "research_query": "full_pipeline",
                 "explanation": "explanation",
                 "casual_chat": None,
                 "out_of_domain_cs": None,
@@ -207,7 +314,7 @@ async def classify_with_qwen(query: str, forced_domain: Optional[str] = None) ->
         logger.warning(f"Qwen classification failed: {e} → using keyword fallback")
         
         # Fallback to keyword-based classification
-        domain, confidence = classify_by_keywords(query, forced_domain)
+        domain, confidence, is_research = classify_by_keywords(query, forced_domain)
         
         # Handle out-of-domain cases
         if domain.startswith("out_of_domain"):
@@ -220,10 +327,21 @@ async def classify_with_qwen(query: str, forced_domain: Optional[str] = None) ->
                 "method": "keyword_fallback"
             }
         
-        # Map domain to intent
+        # Handle research queries
+        if is_research or domain in ["cs", "biomed"]:
+            return {
+                "intent": "research_query",
+                "confidence": max(confidence, 0.7),
+                "needs_pipeline": True,
+                "task": "full_pipeline",
+                "reasoning": f"Research query detected in {domain} domain",
+                "method": "keyword_fallback"
+            }
+        
+        # Map domain to intent for non-research
         intent_map = {
-            "biomed": "research_planning",
-            "cs": "research_planning",
+            "biomed": "explanation",
+            "cs": "explanation",
             "casual_chat": "casual_chat"
         }
         
@@ -234,7 +352,7 @@ async def classify_with_qwen(query: str, forced_domain: Optional[str] = None) ->
             "intent": intent,
             "confidence": confidence,
             "needs_pipeline": needs_pipeline,
-            "task": "experimental_design" if needs_pipeline else None,
+            "task": "full_pipeline" if needs_pipeline else None,
             "reasoning": "Keyword-based classification",
             "method": "keyword_fallback"
         }
@@ -263,12 +381,80 @@ async def classify_conversation_intent(
     
     logger.info(f"Classifying query (domain={forced_domain}): {query[:100]}...")
     
+    # Quick pre-check for obvious research queries (bypasses LLM for speed)
+    query_lower = query.lower()
+    
+    # Check for CS research patterns (fast path)
+    cs_research_indicators = [
+        "random forest", "xgboost", "ensemble", "precision", "recall", "f1",
+        "accuracy", "improved from", "increased from", "boosted by",
+        "model stability", "hyperparameter", "cross-validation"
+    ]
+    
+    for indicator in cs_research_indicators:
+        if indicator in query_lower:
+            logger.info(f"🔬 Fast-path CS research detected: '{indicator}'")
+            return {
+                "intent": "research_query",
+                "confidence": 0.85,
+                "needs_pipeline": True,
+                "task": "full_pipeline",
+                "reasoning": f"Fast-path: CS research indicator '{indicator}'",
+                "method": "fast_path"
+            }
+    
+    # Check for biomed research patterns (fast path)
+    biomed_research_indicators = [
+        "cell culture", "enzyme activity", "protein expression", "ph",
+        "temperature effect", "dosage", "clinical trial", "in vivo", "in vitro"
+    ]
+    
+    for indicator in biomed_research_indicators:
+        if indicator in query_lower:
+            logger.info(f"🔬 Fast-path biomed research detected: '{indicator}'")
+            return {
+                "intent": "research_query",
+                "confidence": 0.85,
+                "needs_pipeline": True,
+                "task": "full_pipeline",
+                "reasoning": f"Fast-path: Biomed research indicator '{indicator}'",
+                "method": "fast_path"
+            }
+    
+    # Check for performance number patterns
+    if re.search(r"improved .+ from [\d\.]+ to [\d\.]+", query_lower):
+        logger.info("🔬 Fast-path: Performance improvement pattern detected")
+        return {
+            "intent": "research_query",
+            "confidence": 0.90,
+            "needs_pipeline": True,
+            "task": "full_pipeline",
+            "reasoning": "Fast-path: Performance improvement pattern",
+            "method": "fast_path"
+        }
+    
+    # Proceed with LLM classification for ambiguous cases
     try:
         result = await classify_with_qwen(query, forced_domain)
         
+        # Override: If query has research characteristics but LLM said casual
+        if result.get("intent") == "casual_chat" and not result.get("needs_pipeline"):
+            # Double-check with keyword analysis
+            _, _, is_research = classify_by_keywords(query, forced_domain)
+            if is_research:
+                logger.warning("LLM misclassified research query as casual - overriding")
+                result = {
+                    "intent": "research_query",
+                    "confidence": 0.75,
+                    "needs_pipeline": True,
+                    "task": "full_pipeline",
+                    "reasoning": "Overriding LLM misclassification",
+                    "method": "keyword_override"
+                }
+        
         logger.info(
             f"🤖 Classification: {result['intent']} "
-            f"(conf={result['confidence']:.2f}, method={result['method']})"
+            f"(conf={result['confidence']:.2f}, method={result['method']}, pipeline={result['needs_pipeline']})"
         )
         
         return result
@@ -276,7 +462,17 @@ async def classify_conversation_intent(
     except Exception as e:
         logger.error(f"Classification failed completely: {e}")
         
-        # Ultimate fallback
+        # Ultimate fallback - treat as research if it has any substance
+        if len(query.split()) > 5:
+            return {
+                "intent": "research_query",
+                "confidence": 0.6,
+                "needs_pipeline": True,
+                "task": "full_pipeline",
+                "reasoning": "Fallback: treating as research due to length",
+                "method": "error_fallback"
+            }
+        
         return {
             "intent": "casual_chat",
             "confidence": 0.3,
@@ -298,26 +494,29 @@ def get_out_of_domain_message(intent: str, query: str) -> str:
     """Generate appropriate out-of-domain refusal message"""
     
     if intent == "out_of_domain_cs":
-        return """This question appears to be about computer science, algorithms, or machine learning theory. 
+        return """I appreciate your question, but I am specifically designed for **computer science research**. 
 
-I am specialized in **biomedical experimental research** (biology, biochemistry, pharmacology, wet-lab protocols, clinical research) and cannot provide reliable answers on CS topics.
+Your query appears to be about biomedical or biological experiments. For questions about:
+- Cell cultures, enzymes, proteins
+- pH, temperature, drug dosages
+- Clinical trials or wet-lab protocols
 
-Please either:
-1. Rephrase your question in a biomedical context, or
-2. Use a computer science-focused system for this query.
+Please use a biomedical-focused system.
 
-I'd be happy to help with any biology or experimental design questions!"""
+However, if you have a CS research question (algorithms, ML models, performance optimization, system design), I'd be happy to help!"""
     
     elif intent == "out_of_domain_biomed":
-        return """This question appears to be about biological experiments, wet-lab protocols, or medical research.
+        return """I appreciate your question, but I am specifically designed for **biomedical research**. 
 
-I am specialized in **computer science theory** (algorithms, complexity, machine learning theory, systems) and cannot provide reliable answers on biological experiments or life sciences.
+Your query appears to be about computer science. For questions about:
+- Algorithms and complexity
+- Machine learning models
+- Performance optimization
+- System design
 
-Please either:
-1. Rephrase your question in a computational/algorithmic context, or
-2. Use a biomedical-focused system for this query.
+Please use a CS-focused system.
 
-I'd be happy to help with any CS theory or algorithmic questions!"""
+However, if you have a biomedical research question (experimental design, parameter optimization, biological mechanisms), I'd be happy to help!"""
     
     else:
-        return "I cannot assist with this query as it falls outside my area of specialization."
+        return "I'm specialized in research questions. Please ask me about computer science or biomedical research topics."
